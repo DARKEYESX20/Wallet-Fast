@@ -11,16 +11,35 @@ android {
         applicationId = "com.walletfast"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "0.1"
     }
 
+    fun prop(name: String): String? =
+        System.getenv(name) ?: (project.findProperty(name) as String?)
+
+    signingConfigs {
+        create("release") {
+            val path = prop("KEYSTORE_PATH")
+            if (path != null) {
+                storeFile = file(path)
+                storePassword = prop("KEYSTORE_PASSWORD")
+                keyAlias = prop("KEY_ALIAS")
+                keyPassword = prop("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            signingConfig = signingConfigs.getByName("debug")
+            val rel = signingConfigs.getByName("release")
+            signingConfig = if (rel.storeFile != null) rel else signingConfigs.getByName("debug")
         }
     }
 
