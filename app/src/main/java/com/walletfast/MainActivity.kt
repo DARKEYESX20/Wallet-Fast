@@ -180,6 +180,10 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
         }
     }
+    private fun quit() {
+        finishAndRemoveTask()
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
 
     private fun field(hint: String, value: String, type: Int) = EditText(this).apply {
         this.hint = hint
@@ -272,7 +276,7 @@ class MainActivity : Activity() {
                         lastTap = now
                         addTx(t.label, t.amt)
                         buzz()
-                        if (autoClose) finish() else render()
+                        if (autoClose) quit() else render()
                     }
                 }
             }
