@@ -61,6 +61,7 @@ class MainActivity : Activity() {
     private var tab = 0            // 0 = Templates (home), 1 = Accounts
     private var edit = false
     private var autoClose = false
+    private var vibrate = true     // Vibration setting (Edit mode)
     private var lastTap = 0L
     private var navAnim = false    // play the nav pill fade-in on the next render
     private var newTxId: String? = null // newest history row fades in once
@@ -164,6 +165,7 @@ class MainActivity : Activity() {
             }
             active = o.optInt("active", 0).coerceIn(0, 4)
             autoClose = o.optBoolean("ac", false)
+            vibrate = o.optBoolean("vib", true)
             if (accs.size != 5) { defaults(); return }
         } catch (e: Exception) {
             defaults()
@@ -186,7 +188,7 @@ class MainActivity : Activity() {
         accs.forEach { a.put(JSONObject().put("n", it.name).put("o", it.open)) }
         val t = JSONArray()
         tpls.forEach { t.put(JSONObject().put("l", it.label).put("a", it.amt)) }
-        val o = JSONObject().put("accs", a).put("tpls", t).put("active", active).put("ac", autoClose)
+        val o = JSONObject().put("accs", a).put("tpls", t).put("active", active).put("ac", autoClose).put("vib", vibrate)
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", o.toString()).apply()
     }
 
@@ -298,6 +300,7 @@ class MainActivity : Activity() {
     }
 
     private fun buzz() {
+        if (!vibrate) return
         try {
             val v = getSystemService(Vibrator::class.java)
             v?.vibrate(VibrationEffect.createOneShot(25, VibrationEffect.DEFAULT_AMPLITUDE))
@@ -581,15 +584,19 @@ class MainActivity : Activity() {
 
         // settings (edit mode)
         if (edit) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(14), dp(14), dp(14))
-                background = box(CARD, BORDER)
+            fun setting(label: String, on: Boolean, top: Int, change: (Boolean) -> Unit) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(14), dp(14), dp(14), dp(14))
+                    background = box(CARD, BORDER)
+                }
+                row.addView(tv(label, 14f, TEXT), lp(0, WRAP, 1f))
+                row.addView(toggle(on, change), lp(dp(50), dp(28)))
+                root.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(top), 0, 0) })
             }
-            row.addView(tv("Save & close app on template tap", 14f, TEXT), lp(0, WRAP, 1f))
-            row.addView(toggle(autoClose) { autoClose = it; saveCfg() }, lp(dp(50), dp(28)))
-            root.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(20), 0, 0) })
+            setting("Save & close app on template tap", autoClose, 20) { autoClose = it; saveCfg() }
+            setting("Vibration", vibrate, 8) { vibrate = it; saveCfg(); if (it) buzz() }
         }
 
         return scroll(root)
