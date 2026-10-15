@@ -20,6 +20,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.AccelerateInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
@@ -53,6 +54,8 @@ class MainActivity : Activity() {
     private val DUR = 120L
     private val DOWN_DUR = 80L
     private val ease = DecelerateInterpolator()
+    private val UNDO_DUR = 60L
+    private val easeOut = AccelerateInterpolator()
 
     private val accs = ArrayList<Acc>()
     private val tpls = ArrayList<Tpl>()
@@ -86,6 +89,7 @@ class MainActivity : Activity() {
         file = File(filesDir, "telefon.jsonl")
         loadCfg()
         loadTx()
+        buildFrame()
         render()
     }
 
@@ -343,11 +347,6 @@ class MainActivity : Activity() {
         setPadding(dp(14), dp(12), dp(14), dp(24))
     }
 
-    private fun scroll(v: View) = ScrollView(this).apply {
-        isVerticalScrollBarEnabled = false
-        addView(v)
-    }
-
     // custom on/off switch (knob slides, track color fades)
     private fun toggle(on: Boolean, change: (Boolean) -> Unit): View {
         var state = on
@@ -382,15 +381,38 @@ class MainActivity : Activity() {
     }
 
     // ---------- screen ----------
-    private fun render() {
-        sheet = null
+
+    private var sv: ScrollView? = null
+    private var navHost: FrameLayout? = null
+    private var shownTab = -1
+
+    // the frame, scroll area and nav slot are built once and stay on screen
+    private fun buildFrame() {
         val f = FrameLayout(this).apply { setBackgroundColor(BG) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(if (tab == 0) buildTemplates() else buildAccounts(), lp(MATCH, 0, 1f))
-        col.addView(buildNav(), lp(MATCH, WRAP))
+        val s = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        val nav = FrameLayout(this)
+        col.addView(s, lp(MATCH, 0, 1f))
+        col.addView(nav, lp(MATCH, WRAP))
         f.addView(col, FrameLayout.LayoutParams(MATCH, MATCH))
+        sv = s
+        navHost = nav
         frame = f
         setContentView(f)
+    }
+
+    // only the content is rebuilt, so the scroll position stays where it was
+    private fun render() {
+        if (sheet != null) closeSheet()
+        val s = sv ?: return
+        s.removeAllViews()
+        s.addView(if (tab == 0) buildTemplates() else buildAccounts())
+        if (shownTab != tab) {          // tab changed: start at the top, refresh the nav
+            s.scrollTo(0, 0)
+            navHost?.removeAllViews()
+            navHost?.addView(buildNav())
+            shownTab = tab
+        }
     }
 
     private fun buildNav(): View {
@@ -571,7 +593,7 @@ class MainActivity : Activity() {
                 setPadding(dp(14), dp(10), dp(6), dp(10))
                 setOnClickListener {
                     isClickable = false // no double undo while the row slides out
-                    r.animate().alpha(0f).translationX(dp(28).toFloat()).setDuration(DUR).setInterpolator(ease)
+                    r.animate().alpha(0f).translationX(dp(40).toFloat()).setDuration(UNDO_DUR).setInterpolator(easeOut)
                         .withEndAction { undo(tx) }
                         .start()
                 }
@@ -603,7 +625,7 @@ class MainActivity : Activity() {
             setting("Vibration", vibrate, 8) { vibrate = it; saveCfg(); if (it) buzz() }
         }
 
-        return scroll(root)
+        return root
     }
 
     // ---------- Accounts tab ----------
@@ -640,7 +662,7 @@ class MainActivity : Activity() {
             if (edit) r.addView(tv("Edit", 13f, ACCENT, true).apply { setPadding(dp(12), 0, 0, 0) })
             root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
-        return scroll(root)
+        return root
     }
     // ---------- account picker ----------
     private fun openAccountPicker() {
