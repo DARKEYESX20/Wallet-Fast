@@ -35,7 +35,7 @@ import java.util.UUID
 class MainActivity : Activity() {
 
     private class Acc(var name: String, var open: Double)
-    private class Tpl(var label: String, var amt: Double)
+    private class Tpl(var label: String, var amt: Double, var acc: Int = -1)
     private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double)
 
     private val BG = 0xFF121613.toInt()
@@ -166,7 +166,7 @@ class MainActivity : Activity() {
             val t = o.getJSONArray("tpls")
             for (i in 0 until t.length()) {
                 val x = t.getJSONObject(i)
-                tpls.add(Tpl(x.getString("l"), x.getDouble("a")))
+                tpls.add(Tpl(x.getString("l"), x.getDouble("a"), x.optInt("c", -1).let { if (it in 0..4) it else -1 }))
             }
             active = o.optInt("active", 0).coerceIn(0, 4)
             autoClose = o.optBoolean("ac", false)
@@ -192,7 +192,7 @@ class MainActivity : Activity() {
         val a = JSONArray()
         accs.forEach { a.put(JSONObject().put("n", it.name).put("o", it.open)) }
         val t = JSONArray()
-        tpls.forEach { t.put(JSONObject().put("l", it.label).put("a", it.amt)) }
+        tpls.forEach { t.put(JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc)) }
         val o = JSONObject().put("accs", a).put("tpls", t).put("active", active).put("ac", autoClose).put("vib", vibrate)
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", o.toString()).apply()
     }
@@ -227,8 +227,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addTx(label: String, amt: Double) {
-        val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), active, label, amt)
+    private fun addTx(label: String, amt: Double, acc: Int) {
+        val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), acc, label, amt)
         txs.add(tx)
         newTxId = tx.id
         append(JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt))
@@ -547,7 +547,7 @@ class MainActivity : Activity() {
                         if (now - lastTap < gap) return@setOnClickListener
                         lastTap = now
                         lastTapIdx = idx
-                        addTx(t.label, t.amt)
+                        addTx(t.label, t.amt, if (t.acc in 0..4) t.acc else active)
                         buzz()
                         if (autoClose) quit() else render()
                     }
@@ -558,6 +558,10 @@ class MainActivity : Activity() {
             c.addView(tv(sgn(t.amt), 18f, if (t.amt < 0) DANGER else ACCENT).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
+            })
+            if (t.acc in 0..4) c.addView(tv(accs[t.acc].name, 12f, SUB).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(6), 0, 0)
             })
             cell(c)
         }
@@ -741,7 +745,7 @@ class MainActivity : Activity() {
             requireName = false,
             requireAmount = false,
             onDelete = null
-        ) { nm, v ->
+        ) { nm, v, _ ->
             if (nm.isNotEmpty()) a.name = nm
             a.open = v - (cur - a.open)
             saveCfg()
@@ -750,21 +754,29 @@ class MainActivity : Activity() {
     }
 
     private fun openTplEditor(idx: Int) {
-        val t = if (idx >= 0) tpls[idx] else null
+        val isNew = idx < 0
         openEditor(
-            title = if (t == null) "New Template" else "Edit Template",
+            title = if (isNew) "New Template" else "Edit Template",
             nameHint = "Name (e.g. Bus)",
-            name = t?.label ?: "",
+            name = if (isNew) "" else tpls[idx].label,
             amountLabel = "Amount",
-            amount = t?.amt,
+            amount = if (isNew) null else tpls[idx].amt,
             negLabel = "Expense",
             posLabel = "Income",
-            startOnName = t == null,
+            startOnName = isNew,
             requireName = true,
             requireAmount = true,
-            onDelete = if (t == null) null else ({ tpls.removeAt(idx); saveCfg(); render() })
-        ) { nm, v ->
-            if (t == null) tpls.add(Tpl(nm, v)) else { t.label = nm; t.amt = v }
+            onDelete = if (isNew) null else ({ tpls.removeAt(idx); saveCfg(); render() }),
+            accSel = if (isNew) -1 else tpls[idx].acc
+        ) { nm, v, a ->
+            if (isNew) {
+                tpls.add(Tpl(nm, v, a))
+            } else {
+                val e = tpls[idx]
+                e.label = nm
+                e.amt = v
+                e.acc = a
+            }
             saveCfg()
             render()
         }
@@ -807,13 +819,15 @@ class MainActivity : Activity() {
         requireName: Boolean,
         requireAmount: Boolean,
         onDelete: (() -> Unit)?,
-        onSave: (String, Double) -> Unit
+        accSel: Int? = null,
+        onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
         if (sheet != null) return
 
         var neg = (amount ?: -1.0) < 0
         val buf = StringBuilder(if (amount == null) "" else raw(Math.abs(amount)))
+        var pick = accSel ?: -1   // -1 = follow the active account
 
         val scrim = FrameLayout(this).apply {
             setBackgroundColor(0xB3000000.toInt())
@@ -895,6 +909,35 @@ class MainActivity : Activity() {
         amtBox.addView(seg)
         sh.addView(amtBox, lp(MATCH, WRAP))
 
+        // account chips: only shown in the template editor
+        val chips = ArrayList<TextView>()
+        fun styleChips() {
+            chips.forEachIndexed { n, c ->
+                val on = (n - 1) == pick
+                c.setTextColor(if (on) ACCENT else SUB)
+                c.background = box(if (on) BG else KEY, if (on) ACCENT else 0)
+            }
+        }
+        if (accSel != null) {
+            sh.addView(tv("Charged from", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
+            val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (n in -1 until 5) {
+                val label = if (n < 0) "Active account" else accs[n].name
+                val chip = tv(label, 13f, SUB, true).apply {
+                    setPadding(dp(14), dp(9), dp(14), dp(9))
+                    setOnClickListener { pick = n; styleChips() }
+                }
+                pressFx(chip, 0.96f)
+                chips.add(chip)
+                chipRow.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
+            }
+            val hs = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(chipRow)
+            }
+            sh.addView(hs, lp(MATCH, WRAP))
+            styleChips()
+        }
         val err = tv("", 12f, DANGER).apply {
             setPadding(dp(2), dp(8), 0, 0)
             visibility = View.GONE
@@ -971,7 +1014,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 closeSheet()
-                onSave(nm, if (neg) -v else v)
+                onSave(nm, if (neg) -v else v, pick)
             }
         }
         pressFx(saveBtn, 0.97f)
