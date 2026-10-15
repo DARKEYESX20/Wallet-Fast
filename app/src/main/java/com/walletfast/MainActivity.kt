@@ -377,7 +377,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = tap(CARD, BORDER)
-            setOnClickListener { tab = 1; edit = false; render() }
+            setOnClickListener { openAccountPicker() }
         }
         val acl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         acl.addView(tv("Active account", 11f, SUB))
@@ -507,8 +507,67 @@ class MainActivity : Activity() {
         }
         return scroll(root)
     }
+    // ---------- account picker ----------
+    private fun openAccountPicker() {
+        val f = frame ?: return
+        if (sheet != null) return
 
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeSheet() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true // sheete dokununca scrim kapanmasın
+        }
+
+        // tutamaç
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+
+        sh.addView(tv("Select Account", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(8)) })
+
+        for (i in 0 until 5) {
+            val sel = i == active
+            val bal = balOf(i)
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(64)
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                background = tap(BG, if (sel) ACCENT else BORDER)
+                setOnClickListener {
+                    active = i
+                    saveCfg()
+                    render() // sheet'i de kapatır, Templates ekranında kalırız
+                }
+            }
+            val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            l.addView(tv(accs[i].name, 16f, TEXT, true))
+            if (sel) l.addView(tv("Active", 12f, ACCENT))
+            r.addView(l, lp(0, WRAP, 1f))
+            r.addView(tv(fmt(bal), 17f, if (bal < 0) DANGER else TEXT, true))
+            sh.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
+        }
+
+        val sv = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(sh)
+        }
+        scrim.addView(sv, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        sheet = scrim
+    }
     // ---------- editors ----------
+
     private fun openAccEditor(i: Int) {
         val a = accs[i]
         val cur = balOf(i)
