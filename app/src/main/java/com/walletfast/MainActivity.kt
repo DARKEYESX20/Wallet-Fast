@@ -1,5 +1,8 @@
 package com.walletfast
 
+import android.annotation.SuppressLint
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Typeface
@@ -12,9 +15,11 @@ import android.os.Vibrator
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
@@ -40,8 +45,14 @@ class MainActivity : Activity() {
     private val ACCENT = 0xFF3DDB9D.toInt()
     private val DANGER = 0xFFFF6B52.toInt()
     private val BORDER = 0xFF2A322D.toInt()
+    private val PILL = 0x2E3DDB9D          // ACCENT at ~18% opacity (subtle nav pill)
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+    // animation: very short and subtle, GPU-friendly property animations only
+    private val DUR = 120L
+    private val DOWN_DUR = 80L
+    private val ease = DecelerateInterpolator()
 
     private val accs = ArrayList<Acc>()
     private val tpls = ArrayList<Tpl>()
@@ -51,11 +62,19 @@ class MainActivity : Activity() {
     private var edit = false
     private var autoClose = false
     private var lastTap = 0L
+    private var navAnim = false    // play the nav pill fade-in on the next render
+    private var newTxId: String? = null // newest history row fades in once
     private var frame: FrameLayout? = null
     private var sheet: View? = null
     private lateinit var file: File
     private lateinit var fontReg: Typeface
     private lateinit var fontBold: Typeface
+
+    // swipe tracking
+    private var swX = 0f
+    private var swY = 0f
+    private var swT = 0L
+    private var swArmed = false
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -82,9 +101,41 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         when {
             sheet != null -> closeSheet()
-            tab != 0 -> { tab = 0; edit = false; render() }
+            tab != 0 -> { tab = 0; edit = false; navAnim = true; render() }
             else -> super.onBackPressed()
         }
+    }
+
+    // Swipe left/right anywhere on screen to switch tabs (threshold based, no live drag)
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swX = ev.rawX
+                swY = ev.rawY
+                swT = ev.eventTime
+                swArmed = sheet == null
+            }
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> swArmed = false
+        }
+        val handled = super.dispatchTouchEvent(ev)
+        if (ev.actionMasked == MotionEvent.ACTION_UP && swArmed) {
+            swArmed = false
+            val dx = ev.rawX - swX
+            val dy = ev.rawY - swY
+            val fast = ev.eventTime - swT < 600
+            val far = Math.abs(dx) > dp(80).toFloat()
+            val horizontal = Math.abs(dx) > Math.abs(dy) * 2f
+            if (sheet == null && fast && far && horizontal) {
+                val to = if (dx < 0) 1 else 0   // swipe left -> Accounts, swipe right -> Templates
+                if (to != tab) {
+                    tab = to
+                    edit = false
+                    navAnim = true
+                    render()
+                }
+            }
+        }
+        return handled
     }
 
     // ---------- data ----------
@@ -172,6 +223,7 @@ class MainActivity : Activity() {
     private fun addTx(label: String, amt: Double) {
         val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), active, label, amt)
         txs.add(tx)
+        newTxId = tx.id
         append(JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt))
     }
 
@@ -230,6 +282,21 @@ class MainActivity : Activity() {
 
     private fun lp(w: Int, h: Int, wt: Float = 0f) = LinearLayout.LayoutParams(w, h, wt)
 
+    // Press feedback: view shrinks slightly while the finger is down, eases back on release/cancel.
+    // Returns false so clicks, long clicks and scrolling keep working exactly as before.
+    @SuppressLint("ClickableViewAccessibility")
+    private fun pressFx(v: View, to: Float = 0.97f) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(to).scaleY(to).setDuration(DOWN_DUR).setInterpolator(ease).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(DUR).setInterpolator(ease).start()
+            }
+            false
+        }
+    }
+
     private fun buzz() {
         try {
             val v = getSystemService(Vibrator::class.java)
@@ -252,12 +319,19 @@ class MainActivity : Activity() {
         val t = tv(msg, 14f, TEXT, true).apply {
             setPadding(dp(18), dp(12), dp(18), dp(12))
             background = box(KEY, BORDER)
+            alpha = 0f
+            translationY = dp(10).toFloat()
         }
         f.addView(
             t,
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(88) }
         )
-        t.postDelayed({ (t.parent as? ViewGroup)?.removeView(t) }, 2000)
+        t.animate().alpha(1f).translationY(0f).setDuration(DUR).setInterpolator(ease).start()
+        t.postDelayed({
+            t.animate().alpha(0f).translationY(dp(6).toFloat()).setDuration(DUR).setInterpolator(ease)
+                .withEndAction { (t.parent as? ViewGroup)?.removeView(t) }
+                .start()
+        }, 1900)
     }
 
     private fun page() = LinearLayout(this).apply {
@@ -270,10 +344,15 @@ class MainActivity : Activity() {
         addView(v)
     }
 
-    // custom on/off switch
+    // custom on/off switch (knob slides, track color fades)
     private fun toggle(on: Boolean, change: (Boolean) -> Unit): View {
         var state = on
         val track = FrameLayout(this)
+        val trackBg = GradientDrawable().apply {
+            setColor(if (on) ACCENT else BORDER)
+            cornerRadius = dp(15).toFloat()
+        }
+        track.background = trackBg
         val knob = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
@@ -282,16 +361,19 @@ class MainActivity : Activity() {
         }
         val kp = FrameLayout.LayoutParams(dp(22), dp(22)).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
         track.addView(knob, kp)
-        fun paint() {
-            track.background = GradientDrawable().apply {
-                setColor(if (state) ACCENT else BORDER)
-                cornerRadius = dp(15).toFloat()
+        val travel = dp(22).toFloat() // track 50dp - knob 22dp - margins 6dp
+        knob.translationX = if (on) travel else 0f
+        track.setOnClickListener {
+            state = !state
+            knob.animate().translationX(if (state) travel else 0f).setDuration(DUR).setInterpolator(ease).start()
+            ValueAnimator.ofObject(ArgbEvaluator(), if (state) BORDER else ACCENT, if (state) ACCENT else BORDER).apply {
+                duration = DUR
+                interpolator = ease
+                addUpdateListener { trackBg.setColor(it.animatedValue as Int) }
+                start()
             }
-            kp.gravity = if (state) Gravity.END else Gravity.START
-            knob.layoutParams = kp
+            change(state)
         }
-        paint()
-        track.setOnClickListener { state = !state; paint(); change(state) }
         return track
     }
 
@@ -308,6 +390,8 @@ class MainActivity : Activity() {
     }
 
     private fun buildNav(): View {
+        val animate = navAnim
+        navAnim = false
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         wrap.addView(View(this).apply { setBackgroundColor(BORDER) }, lp(MATCH, dp(1)))
         val bar = LinearLayout(this).apply {
@@ -320,23 +404,47 @@ class MainActivity : Activity() {
             val cell = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(0, dp(6), 0, dp(6))
                 setOnClickListener {
                     if (tab != idx) {
                         tab = idx
                         edit = false
+                        navAnim = true
                         render()
                     }
                 }
             }
-            cell.addView(ImageView(this).apply {
+            // soft pill behind the icon + label of the selected tab
+            val pill = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(22), dp(5), dp(22), dp(5))
+            }
+            if (sel) {
+                val bg = GradientDrawable().apply {
+                    setColor(PILL)
+                    cornerRadius = dp(16).toFloat()
+                }
+                pill.background = bg
+                if (animate) {
+                    bg.alpha = 0
+                    ValueAnimator.ofInt(0, 255).apply {
+                        duration = DUR
+                        interpolator = ease
+                        addUpdateListener { bg.alpha = it.animatedValue as Int }
+                        start()
+                    }
+                }
+            }
+            pill.addView(ImageView(this).apply {
                 setImageResource(icon)
                 setColorFilter(c)
             }, lp(dp(24), dp(24)))
-            cell.addView(tv(label, 11f, c, sel).apply {
+            pill.addView(tv(label, 11f, c, sel).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(2), 0, 0)
-            })
+            }, lp(WRAP, WRAP))
+            cell.addView(pill, lp(WRAP, WRAP))
             bar.addView(cell, lp(0, WRAP, 1f))
         }
         item(0, R.drawable.ic_home, "Templates")
@@ -379,6 +487,7 @@ class MainActivity : Activity() {
             background = tap(CARD, BORDER)
             setOnClickListener { openAccountPicker() }
         }
+        pressFx(ac, 0.98f)
         val acl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         acl.addView(tv("Active account", 11f, SUB))
         acl.addView(tv(accs[active].name, 15f, TEXT, true))
@@ -415,6 +524,7 @@ class MainActivity : Activity() {
                     }
                 }
             }
+            pressFx(c, 0.96f)
             c.addView(tv(t.label, 23f, TEXT, true).apply { gravity = Gravity.CENTER })
             c.addView(tv(sgn(t.amt), 18f, if (t.amt < 0) DANGER else ACCENT).apply {
                 gravity = Gravity.CENTER
@@ -429,6 +539,7 @@ class MainActivity : Activity() {
             background = tap(BG, BORDER)
             setOnClickListener { openTplEditor(-1) }
         }
+        pressFx(add, 0.96f)
         add.addView(tv("+ New Template", 17f, SUB, true).apply { gravity = Gravity.CENTER })
         cell(add)
         root.addView(grid)
@@ -451,10 +562,22 @@ class MainActivity : Activity() {
             r.addView(tv(sgn(tx.amt), 15f, if (tx.amt < 0) DANGER else ACCENT, true))
             r.addView(tv("Undo", 13f, SUB).apply {
                 setPadding(dp(14), dp(10), dp(6), dp(10))
-                setOnClickListener { undo(tx) }
+                setOnClickListener {
+                    isClickable = false // no double undo while the row slides out
+                    r.animate().alpha(0f).translationX(dp(28).toFloat()).setDuration(DUR).setInterpolator(ease)
+                        .withEndAction { undo(tx) }
+                        .start()
+                }
             })
+            // only the row that was just added fades in; the rest stay still
+            if (tx.id == newTxId) {
+                r.alpha = 0f
+                r.translationY = -dp(8).toFloat()
+                r.post { r.animate().alpha(1f).translationY(0f).setDuration(DUR).setInterpolator(ease).start() }
+            }
             root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) })
         }
+        newTxId = null
 
         // settings (edit mode)
         if (edit) {
@@ -497,6 +620,7 @@ class MainActivity : Activity() {
                     }
                 }
             }
+            pressFx(r, 0.98f)
             val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             l.addView(tv(accs[i].name, 16f, TEXT, true))
             if (sel) l.addView(tv("Active", 12f, ACCENT))
@@ -550,6 +674,7 @@ class MainActivity : Activity() {
                     render() // sheet'i de kapatır, Templates ekranında kalırız
                 }
             }
+            pressFx(r, 0.98f)
             val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             l.addView(tv(accs[i].name, 16f, TEXT, true))
             if (sel) l.addView(tv("Active", 12f, ACCENT))
@@ -777,6 +902,7 @@ class MainActivity : Activity() {
                     setOnClickListener { press(buf, k); refresh() }
                     if (k == "←") setOnLongClickListener { buf.setLength(0); refresh(); true }
                 }
+                pressFx(key, 0.94f)
                 line.addView(key, lp(0, dp(50), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             }
             pad.addView(line)
@@ -788,12 +914,14 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(8), 0, 0)
         }
-        btns.addView(tv("Cancel", 16f, SUB, true).apply {
+        val cancelBtn = tv("Cancel", 16f, SUB, true).apply {
             gravity = Gravity.CENTER
             background = tap(KEY)
             setOnClickListener { closeSheet() }
-        }, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
-        btns.addView(tv("Save", 16f, BG, true).apply {
+        }
+        pressFx(cancelBtn, 0.97f)
+        btns.addView(cancelBtn, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        val saveBtn = tv("Save", 16f, BG, true).apply {
             gravity = Gravity.CENTER
             background = tap(ACCENT)
             setOnClickListener {
@@ -812,7 +940,9 @@ class MainActivity : Activity() {
                 closeSheet()
                 onSave(nm, if (neg) -v else v)
             }
-        }, lp(0, dp(52), 1.5f))
+        }
+        pressFx(saveBtn, 0.97f)
+        btns.addView(saveBtn, lp(0, dp(52), 1.5f))
         sh.addView(btns)
 
         // focus handling: name -> Android keyboard, amount -> in-app numpad
