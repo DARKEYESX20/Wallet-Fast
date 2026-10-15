@@ -54,10 +54,14 @@ class MainActivity : Activity() {
     private var frame: FrameLayout? = null
     private var sheet: View? = null
     private lateinit var file: File
+    private lateinit var fontReg: Typeface
+    private lateinit var fontBold: Typeface
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        fontReg = resources.getFont(R.font.open_sans_regular)
+        fontBold = resources.getFont(R.font.open_sans_bold)
         file = File(filesDir, "telefon.jsonl")
         loadCfg()
         loadTx()
@@ -212,7 +216,7 @@ class MainActivity : Activity() {
         this.text = text
         textSize = size
         setTextColor(color)
-        if (bold) typeface = Typeface.DEFAULT_BOLD
+        typeface = if (bold) fontBold else fontReg
     }
 
     private fun box(fill: Int, stroke: Int = 0) = GradientDrawable().apply {
@@ -329,7 +333,10 @@ class MainActivity : Activity() {
                 setImageResource(icon)
                 setColorFilter(c)
             }, lp(dp(24), dp(24)))
-            cell.addView(tv(label, 11f, c, sel).apply { setPadding(0, dp(2), 0, 0) })
+            cell.addView(tv(label, 11f, c, sel).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, 0)
+            })
             bar.addView(cell, lp(0, WRAP, 1f))
         }
         item(0, R.drawable.ic_home, "Templates")
@@ -343,9 +350,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(tv("Total Balance", 12f, SUB))
-        col.addView(tv(fmt(total), 30f, if (total < 0) DANGER else TEXT, true))
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        col.addView(tv("Total Balance", 15f, SUB))
+        col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, true))
         top.addView(col, lp(0, WRAP, 1f))
         top.addView(tv(if (edit) "Done" else "Edit", 15f, ACCENT, true).apply {
             setPadding(dp(12), dp(10), dp(4), dp(10))
@@ -390,7 +400,7 @@ class MainActivity : Activity() {
             val c = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(8), dp(22), dp(8), dp(22))
+                setPadding(dp(8), dp(36), dp(8), dp(36))
                 background = tap(CARD, BORDER)
                 setOnClickListener {
                     if (edit) {
@@ -405,18 +415,21 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            c.addView(tv(t.label, 18f, TEXT, true).apply { gravity = Gravity.CENTER })
-            c.addView(tv(sgn(t.amt), 14f, if (t.amt < 0) DANGER else ACCENT))
+            c.addView(tv(t.label, 23f, TEXT, true).apply { gravity = Gravity.CENTER })
+            c.addView(tv(sgn(t.amt), 18f, if (t.amt < 0) DANGER else ACCENT).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(4), 0, 0)
+            })
             cell(c)
         }
         val add = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(22), dp(8), dp(22))
+            setPadding(dp(8), dp(36), dp(8), dp(36))
             background = tap(BG, BORDER)
             setOnClickListener { openTplEditor(-1) }
         }
-        add.addView(tv("+ New Template", 16f, SUB, true))
+        add.addView(tv("+ New Template", 17f, SUB, true).apply { gravity = Gravity.CENTER })
         cell(add)
         root.addView(grid)
 
@@ -631,6 +644,7 @@ class MainActivity : Activity() {
             imeOptions = EditorInfo.IME_ACTION_NEXT
             filters = arrayOf<InputFilter>(InputFilter.LengthFilter(24))
             textSize = 17f
+            typeface = fontReg
             setTextColor(TEXT)
             setHintTextColor(SUB)
             setPadding(dp(14), dp(12), dp(14), dp(12))
