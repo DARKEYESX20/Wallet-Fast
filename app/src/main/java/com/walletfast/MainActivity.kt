@@ -63,6 +63,7 @@ class MainActivity : Activity() {
     private var autoClose = false
     private var vibrate = true     // Vibration setting (Edit mode)
     private var lastTap = 0L
+    private var lastTapIdx = -1    // which template was tapped last (for per-template cooldown)
     private var navAnim = false    // play the nav pill fade-in on the next render
     private var newTxId: String? = null // newest history row fades in once
     private var frame: FrameLayout? = null
@@ -519,8 +520,11 @@ class MainActivity : Activity() {
                         openTplEditor(idx)
                     } else {
                         val now = System.currentTimeMillis()
-                        if (now - lastTap < 350) return@setOnClickListener
+                        // same template again = likely double tap (250 ms), another template = 100 ms
+                        val gap = if (idx == lastTapIdx) 250 else 100
+                        if (now - lastTap < gap) return@setOnClickListener
                         lastTap = now
+                        lastTapIdx = idx
                         addTx(t.label, t.amt)
                         buzz()
                         if (autoClose) quit() else render()
