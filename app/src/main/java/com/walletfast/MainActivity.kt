@@ -4,11 +4,23 @@ import android.annotation.SuppressLint
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ColorFilter
+import android.graphics.Matrix
+import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
+import android.media.ExifInterface
+import android.net.Uri
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -18,6 +30,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.AccelerateInterpolator
@@ -35,8 +48,40 @@ import java.util.UUID
 class MainActivity : Activity() {
 
     private class Acc(var name: String, var open: Double)
-    private class Tpl(var label: String, var amt: Double, var acc: Int = -1)
+    private class Tpl(
+        var label: String,
+        var amt: Double,
+        var acc: Int = -1,
+        var color: Int = 0,        // 0 = default card look
+        var img: String? = null    // file name inside filesDir/tpl
+    )
     private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double)
+    private class Style(var color: Int, var img: String?)
+
+    // center-crop bitmap drawable (no intrinsic size, so it never changes the card's height)
+    private class CropDrawable(private val b: Bitmap) : Drawable() {
+        private val p = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        override fun draw(c: Canvas) {
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            if (w <= 0f || h <= 0f) return
+            val s = Math.max(w / b.width, h / b.height)
+            val dx = (w - b.width * s) / 2f
+            val dy = (h - b.height * s) / 2f
+            c.save()
+            c.clipRect(bounds)
+            c.translate(bounds.left + dx, bounds.top + dy)
+            c.scale(s, s)
+            c.drawBitmap(b, 0f, 0f, p)
+            c.restore()
+        }
+
+        override fun setAlpha(a: Int) { p.alpha = a }
+        override fun setColorFilter(cf: ColorFilter?) { p.colorFilter = cf }
+
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun getOpacity(): Int = PixelFormat.OPAQUE
+    }
 
     private val BG = 0xFF121613.toInt()
     private val CARD = 0xFF1A201D.toInt()
@@ -49,6 +94,21 @@ class MainActivity : Activity() {
     private val PILL = 0x2E3DDB9D          // ACCENT at ~18% opacity (subtle nav pill)
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+    // template color palette (white text stays readable on all of them)
+    private val PALETTE = intArrayOf(
+        0xFF4A90D9.toInt(), // light blue
+        0xFF2D5BA8.toInt(), // blue
+        0xFF1B2A5C.toInt(), // navy
+        0xFF7A3FA0.toInt(), // purple
+        0xFFB5476B.toInt(), // pink
+        0xFFB98A1F.toInt(), // amber
+        0xFF2A8C9A.toInt(), // teal
+        0xFF5A6670.toInt(), // slate
+        0xFF2E3237.toInt()  // dark gray (near black)
+    )
+    private val WHITE = 0xFFFFFFFF.toInt()
+    private val WHITE_SUB = 0xCCFFFFFF.toInt()
 
     // animation: very short and subtle, GPU-friendly property animations only
     private val DUR = 120L
@@ -74,6 +134,11 @@ class MainActivity : Activity() {
     private lateinit var file: File
     private lateinit var fontReg: Typeface
     private lateinit var fontBold: Typeface
+
+    // template images
+    private val bmpCache = HashMap<String, Bitmap>()
+    private var imgCb: ((String?) -> Unit)? = null
+    private var onSheetClose: (() -> Unit)? = null
 
     // swipe tracking
     private var swX = 0f
@@ -166,7 +231,15 @@ class MainActivity : Activity() {
             val t = o.getJSONArray("tpls")
             for (i in 0 until t.length()) {
                 val x = t.getJSONObject(i)
-                tpls.add(Tpl(x.getString("l"), x.getDouble("a"), x.optInt("c", -1).let { if (it in 0..4) it else -1 }))
+                tpls.add(
+                    Tpl(
+                        x.getString("l"),
+                        x.getDouble("a"),
+                        x.optInt("c", -1).let { if (it in 0..4) it else -1 },
+                        x.optInt("col", 0),
+                        x.optString("img", "").ifEmpty { null }
+                    )
+                )
             }
             active = o.optInt("active", 0).coerceIn(0, 4)
             autoClose = o.optBoolean("ac", false)
@@ -192,7 +265,12 @@ class MainActivity : Activity() {
         val a = JSONArray()
         accs.forEach { a.put(JSONObject().put("n", it.name).put("o", it.open)) }
         val t = JSONArray()
-        tpls.forEach { t.put(JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc)) }
+        tpls.forEach {
+            t.put(
+                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc)
+                    .put("col", it.color).put("img", it.img ?: "")
+            )
+        }
         val o = JSONObject().put("accs", a).put("tpls", t).put("active", active).put("ac", autoClose).put("vib", vibrate)
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", o.toString()).apply()
     }
@@ -246,6 +324,86 @@ class MainActivity : Activity() {
         return r2(s)
     }
 
+    // ---------- template images ----------
+    private fun imgDir() = File(filesDir, "tpl").apply { mkdirs() }
+
+    private fun loadBmp(name: String): Bitmap? {
+        bmpCache[name]?.let { return it }
+        val b = BitmapFactory.decodeFile(File(imgDir(), name).path) ?: return null
+        bmpCache[name] = b
+        return b
+    }
+
+    private fun deleteImg(name: String) {
+        bmpCache.remove(name)
+        try {
+            File(imgDir(), name).delete()
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun pickImage(cb: (String?) -> Unit) {
+        imgCb = cb
+        val i = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, 77)
+        } catch (e: Exception) {
+            imgCb = null
+            snack("No gallery app found")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != 77) return
+        val cb = imgCb
+        imgCb = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null || cb == null) return
+        cb(importImage(uri))
+    }
+
+    // downscale (~700px), fix EXIF rotation, save as JPEG inside the app (data stays on the phone)
+    private fun importImage(uri: Uri): String? {
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            var s = 1
+            while (bounds.outWidth / (s * 2) >= 700 && bounds.outHeight / (s * 2) >= 700) s *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = s }
+            var bmp = contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                ?: return null
+            val ori = try {
+                contentResolver.openInputStream(uri)?.use {
+                    ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)
+                } ?: 1
+            } catch (e: Exception) {
+                1
+            }
+            val deg = when (ori) {
+                6 -> 90f
+                3 -> 180f
+                8 -> 270f
+                else -> 0f
+            }
+            if (deg != 0f) {
+                bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(deg) }, true)
+            }
+            val name = "t_" + UUID.randomUUID().toString() + ".jpg"
+            File(imgDir(), name).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            bmpCache[name] = bmp
+            return name
+        } catch (e: Exception) {
+            snack("Couldn't load image")
+            return null
+        }
+    }
+
     // ---------- format ----------
     private fun r2(n: Double) = Math.round(n * 100.0) / 100.0
 
@@ -286,6 +444,33 @@ class MainActivity : Activity() {
 
     private fun tap(fill: Int, stroke: Int = 0): Drawable =
         RippleDrawable(ColorStateList.valueOf(0x26FFFFFF), box(fill, stroke), null)
+
+    // template card with a photo: cropped image + dark scrim so the text stays readable
+    private fun imgBg(b: Bitmap): Drawable {
+        val scrim = GradientDrawable().apply {
+            setColor(0x8C000000.toInt())
+            cornerRadius = dp(14).toFloat()
+        }
+        return RippleDrawable(
+            ColorStateList.valueOf(0x26FFFFFF),
+            LayerDrawable(arrayOf(CropDrawable(b), scrim)),
+            null
+        )
+    }
+
+    // perceived brightness: true for colors like the soft white, where dark text is needed
+    private fun isLight(c: Int): Boolean {
+        val r = (c shr 16) and 0xFF
+        val g = (c shr 8) and 0xFF
+        val b = c and 0xFF
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 > 0.62
+    }
+
+    private val roundOutline = object : ViewOutlineProvider() {
+        override fun getOutline(view: View, outline: Outline) {
+            outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
+        }
+    }
 
     private fun lp(w: Int, h: Int, wt: Float = 0f) = LinearLayout.LayoutParams(w, h, wt)
 
@@ -532,11 +717,23 @@ class MainActivity : Activity() {
             grid.addView(v, p)
         }
         tpls.forEachIndexed { idx, t ->
+            val bmp = t.img?.let { loadBmp(it) }
+            val styled = bmp != null || t.color != 0
+            val light = bmp == null && t.color != 0 && isLight(t.color)
+            val tc = if (light) BG else if (styled) WHITE else TEXT
             val c = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 setPadding(dp(8), dp(36), dp(8), dp(36))
-                background = tap(CARD, BORDER)
+                background = when {
+                    bmp != null -> imgBg(bmp)
+                    t.color != 0 -> tap(t.color)
+                    else -> tap(CARD, BORDER)
+                }
+                if (bmp != null) {
+                    clipToOutline = true
+                    outlineProvider = roundOutline
+                }
                 setOnClickListener {
                     if (edit) {
                         openTplEditor(idx)
@@ -554,12 +751,17 @@ class MainActivity : Activity() {
                 }
             }
             pressFx(c, 0.96f)
-            c.addView(tv(t.label, 23f, TEXT, true).apply { gravity = Gravity.CENTER })
-            c.addView(tv(sgn(t.amt), 18f, if (t.amt < 0) DANGER else ACCENT).apply {
+            c.addView(tv(t.label, 23f, tc, true).apply { gravity = Gravity.CENTER })
+            val amtCol = when {
+                light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
+                t.amt < 0 -> DANGER
+                else -> ACCENT
+            }
+            c.addView(tv(sgn(t.amt), 21f, amtCol, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             })
-            if (t.acc in 0..4) c.addView(tv(accs[t.acc].name, 12f, SUB).apply {
+            if (t.acc in 0..4) c.addView(tv(accs[t.acc].name, 12f, if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(6), 0, 0)
             })
@@ -755,6 +957,8 @@ class MainActivity : Activity() {
 
     private fun openTplEditor(idx: Int) {
         val isNew = idx < 0
+        val st = if (isNew) Style(0, null) else Style(tpls[idx].color, tpls[idx].img)
+        val origImg = if (isNew) null else tpls[idx].img
         openEditor(
             title = if (isNew) "New Template" else "Edit Template",
             nameHint = "Name (e.g. Bus)",
@@ -766,16 +970,26 @@ class MainActivity : Activity() {
             startOnName = isNew,
             requireName = true,
             requireAmount = true,
-            onDelete = if (isNew) null else ({ tpls.removeAt(idx); saveCfg(); render() }),
-            accSel = if (isNew) -1 else tpls[idx].acc
+            onDelete = if (isNew) null else ({
+                origImg?.let { deleteImg(it) }
+                tpls.removeAt(idx)
+                saveCfg()
+                render()
+            }),
+            accSel = if (isNew) -1 else tpls[idx].acc,
+            style = st
         ) { nm, v, a ->
+            // old photo is no longer used -> free the file
+            if (origImg != null && origImg != st.img) deleteImg(origImg)
             if (isNew) {
-                tpls.add(Tpl(nm, v, a))
+                tpls.add(Tpl(nm, v, a, st.color, st.img))
             } else {
                 val e = tpls[idx]
                 e.label = nm
                 e.amt = v
                 e.acc = a
+                e.color = st.color
+                e.img = st.img
             }
             saveCfg()
             render()
@@ -802,6 +1016,8 @@ class MainActivity : Activity() {
 
     private fun closeSheet() {
         hideKb()
+        onSheetClose?.invoke()
+        onSheetClose = null
         sheet?.let { (it.parent as? ViewGroup)?.removeView(it) }
         sheet = null
     }
@@ -820,6 +1036,7 @@ class MainActivity : Activity() {
         requireAmount: Boolean,
         onDelete: (() -> Unit)?,
         accSel: Int? = null,
+        style: Style? = null,
         onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
@@ -828,6 +1045,15 @@ class MainActivity : Activity() {
         var neg = (amount ?: -1.0) < 0
         val buf = StringBuilder(if (amount == null) "" else raw(Math.abs(amount)))
         var pick = accSel ?: -1   // -1 = follow the active account
+
+        // images picked while this editor is open; the ones that don't end up saved get deleted on close
+        var saved = false
+        val picked = ArrayList<String>()
+        if (style != null) {
+            onSheetClose = {
+                picked.forEach { if (!(saved && it == style.img)) deleteImg(it) }
+            }
+        }
 
         val scrim = FrameLayout(this).apply {
             setBackgroundColor(0xB3000000.toInt())
@@ -938,6 +1164,68 @@ class MainActivity : Activity() {
             sh.addView(hs, lp(MATCH, WRAP))
             styleChips()
         }
+
+        // look: card color or photo (template editor only). Color and photo exclude each other.
+        if (style != null) {
+            sh.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
+            val swatches = ArrayList<TextView>()
+            val imgBtn = tv("", 13f, SUB, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(14), 0, dp(14), 0)
+            }
+            fun styleLook() {
+                swatches.forEachIndexed { n, v ->
+                    val col = if (n == 0) 0 else PALETTE[n - 1]
+                    val on = style.img == null && style.color == col
+                    v.background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(if (col == 0) KEY else col)
+                        setStroke(dp(2), if (on) TEXT else if (col == 0) BORDER else 0)
+                    }
+                }
+                val has = style.img != null
+                imgBtn.text = if (has) "Image ✓" else "Choose image"
+                imgBtn.setTextColor(if (has) ACCENT else SUB)
+                imgBtn.background = box(if (has) BG else KEY, if (has) ACCENT else 0)
+            }
+            val swRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            for (n in 0..PALETTE.size) {
+                val col = if (n == 0) 0 else PALETTE[n - 1]
+                val sw = tv(if (n == 0) "×" else "", 16f, SUB, true).apply {
+                    gravity = Gravity.CENTER
+                    setOnClickListener {
+                        style.color = col
+                        style.img = null
+                        styleLook()
+                    }
+                }
+                pressFx(sw, 0.92f)
+                swatches.add(sw)
+                swRow.addView(sw, lp(dp(34), dp(34)).apply { setMargins(0, 0, dp(8), 0) })
+                if (n == 0) swRow.addView(imgBtn, lp(WRAP, dp(34)).apply { setMargins(0, 0, dp(8), 0) })
+            }
+            val hsLook = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(swRow)
+            }
+            sh.addView(hsLook, lp(MATCH, WRAP))
+            imgBtn.setOnClickListener {
+                pickImage { fileName ->
+                    if (fileName != null) {
+                        picked.add(fileName)
+                        style.img = fileName
+                        style.color = 0
+                        styleLook()
+                    }
+                }
+            }
+            pressFx(imgBtn, 0.96f)
+            styleLook()
+        }
+
         val err = tv("", 12f, DANGER).apply {
             setPadding(dp(2), dp(8), 0, 0)
             visibility = View.GONE
@@ -1013,6 +1301,7 @@ class MainActivity : Activity() {
                     err.visibility = View.VISIBLE
                     return@setOnClickListener
                 }
+                saved = true
                 closeSheet()
                 onSave(nm, if (neg) -v else v, pick)
             }
