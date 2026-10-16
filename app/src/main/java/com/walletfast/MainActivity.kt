@@ -151,7 +151,7 @@ class MainActivity : Activity() {
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         fontReg = resources.getFont(R.font.open_sans_regular)
         fontBold = resources.getFont(R.font.open_sans_bold)
-        file = File(filesDir, "telefon.jsonl")
+        file = File(filesDir, "transactions.jsonl")
         loadCfg()
         loadTx()
         buildFrame()
@@ -249,16 +249,6 @@ class MainActivity : Activity() {
             defaults()
             return
         }
-        // old default names "Hesap 1" -> "Account 1"
-        var changed = false
-        val old = Regex("Hesap [1-5]")
-        for (a in accs) {
-            if (old.matches(a.name)) {
-                a.name = "Account " + a.name.last()
-                changed = true
-            }
-        }
-        if (changed) saveCfg()
     }
 
     private fun saveCfg() {
@@ -887,10 +877,10 @@ class MainActivity : Activity() {
                 setColor(CARD)
                 cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
             }
-            isClickable = true // sheete dokununca scrim kapanmasın
+            isClickable = true // taps on the sheet must not close the scrim
         }
 
-        // tutamaç
+        // handle
         sh.addView(
             View(this).apply { background = box(BORDER) },
             lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
@@ -910,7 +900,7 @@ class MainActivity : Activity() {
                 setOnClickListener {
                     active = i
                     saveCfg()
-                    render() // sheet'i de kapatır, Templates ekranında kalırız
+                    render() // render() also closes the sheet, we stay on the Templates screen
                 }
             }
             pressFx(r, 0.98f)
