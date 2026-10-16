@@ -674,11 +674,149 @@ class MainActivity : Activity() {
         if (edit) root.addView(tv(hint, 12f, SUB).apply { setPadding(dp(2), dp(6), 0, 0) })
     }
 
+    // ---------- drag to reorder (edit mode) ----------
+    // Long-press a template card, drag it over another card and release to move it there.
+    @SuppressLint("ClickableViewAccessibility")
+    private fun dragSort(card: View, from: Int, cards: List<View>) {
+        val s = sv ?: return
+        var dragging = false
+        var curX = 0f
+        var curY = 0f
+        var startX = 0f
+        var startY = 0f
+        var startScroll = 0
+        var target = from
+        var speed = 0
+        var ticking = false
+
+        // translation is kept in content space, so the card stays under the finger while auto-scrolling
+        fun follow() {
+            card.translationX = curX - startX
+            card.translationY = (curY - startY) + (s.scrollY - startScroll)
+        }
+
+        fun hit(): Int {
+            val cx = card.left + card.width / 2f + card.translationX
+            val cy = card.top + card.height / 2f + card.translationY
+            for (i in cards.indices) {
+                val v = cards[i]
+                if (cx >= v.left && cx <= v.right && cy >= v.top && cy <= v.bottom) return i
+            }
+            return target
+        }
+
+        fun mark(i: Int, on: Boolean) {
+            if (i == from) return
+            val sc = if (on) 0.94f else 1f
+            cards[i].animate().alpha(if (on) 0.55f else 1f).scaleX(sc).scaleY(sc)
+                .setDuration(DUR).setInterpolator(ease).start()
+        }
+
+        fun update() {
+            follow()
+            val t = hit()
+            if (t != target) {
+                mark(target, false)
+                target = t
+                mark(target, true)
+            }
+        }
+
+        val tick = object : Runnable {
+            override fun run() {
+                if (!dragging || speed == 0) { ticking = false; return }
+                s.scrollBy(0, speed)
+                update()
+                card.postOnAnimation(this)
+            }
+        }
+
+        // finger near the top/bottom edge of the scroll area -> scroll
+        fun edges() {
+            val loc = IntArray(2)
+            s.getLocationOnScreen(loc)
+            val zone = dp(90)
+            speed = when {
+                curY < loc[1] + zone -> -dp(6)
+                curY > loc[1] + s.height - zone -> dp(6)
+                else -> 0
+            }
+            if (speed != 0 && !ticking) {
+                ticking = true
+                card.postOnAnimation(tick)
+            }
+        }
+
+        fun finish(commit: Boolean) {
+            mark(target, false)
+            val t = if (commit) target else from
+            if (t != from) {
+                val tc = cards[t]
+                card.animate()
+                    .translationX((tc.left - card.left).toFloat())
+                    .translationY((tc.top - card.top).toFloat())
+                    .scaleX(1f).scaleY(1f)
+                    .setDuration(DUR).setInterpolator(ease)
+                    .withEndAction {
+                        val item = tpls.removeAt(from)
+                        tpls.add(t, item)
+                        lastTapIdx = -1
+                        saveCfg()
+                        render()
+                    }.start()
+            } else {
+                card.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
+                    .setDuration(DUR).setInterpolator(ease)
+                    .withEndAction { card.translationZ = 0f }
+                    .start()
+            }
+        }
+
+        card.isHapticFeedbackEnabled = false   // we use our own Vibration setting (buzz)
+        card.setOnLongClickListener {
+            dragging = true
+            swArmed = false                    // a horizontal drag must not switch tabs
+            startX = curX
+            startY = curY
+            startScroll = s.scrollY
+            target = from
+            card.parent?.requestDisallowInterceptTouchEvent(true)
+            (card.parent as? ViewGroup)?.let { g ->
+                g.clipChildren = false
+                (g.parent as? ViewGroup)?.clipChildren = false
+            }
+            card.translationZ = dp(12).toFloat()
+            card.animate().scaleX(1.06f).scaleY(1.06f).setDuration(DUR).setInterpolator(ease).start()
+            buzz()
+            true
+        }
+
+        card.setOnTouchListener { v, e ->
+            curX = e.rawX
+            curY = e.rawY
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    v.animate().scaleX(0.96f).scaleY(0.96f).setDuration(DOWN_DUR).setInterpolator(ease).start()
+                MotionEvent.ACTION_MOVE ->
+                    if (dragging) { update(); edges() }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    if (dragging) {
+                        dragging = false
+                        speed = 0
+                        finish(e.actionMasked == MotionEvent.ACTION_UP)
+                    } else {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(DUR).setInterpolator(ease).start()
+                    }
+            }
+            false
+        }
+    }
+
     // ---------- Templates tab ----------
     private fun buildTemplates(): View {
         val bals = DoubleArray(5) { balOf(it) }
         val root = page()
-        header(root, r2(bals.sum()), "Tap a template to edit or delete it")
+        header(root, r2(bals.sum()), "Tap a template to edit it · hold and drag to reorder")
 
         // which account new entries go to
         val ac = LinearLayout(this).apply {
@@ -706,6 +844,7 @@ class MainActivity : Activity() {
             p.setMargins(dp(4), dp(4), dp(4), dp(4))
             grid.addView(v, p)
         }
+        val cards = ArrayList<View>()
         tpls.forEachIndexed { idx, t ->
             val bmp = t.img?.let { loadBmp(it) }
             val styled = bmp != null || t.color != 0
@@ -740,7 +879,8 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            pressFx(c, 0.96f)
+            cards.add(c)
+            if (edit) dragSort(c, idx, cards) else pressFx(c, 0.96f)
             c.addView(tv(t.label, 23f, tc, true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
                 light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
