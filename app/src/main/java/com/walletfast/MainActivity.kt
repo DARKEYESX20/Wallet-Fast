@@ -955,21 +955,30 @@ class MainActivity : Activity() {
         }
     }
 
+    // Untitled, Untitled 1, Untitled 2 ... (skip = index of the template being edited, -1 for new)
+    private fun untitled(skip: Int): String {
+        val used = tpls.filterIndexed { i, _ -> i != skip }.map { it.label }.toSet()
+        if ("Untitled" !in used) return "Untitled"
+        var n = 1
+        while ("Untitled $n" in used) n++
+        return "Untitled $n"
+    }
+
     private fun openTplEditor(idx: Int) {
         val isNew = idx < 0
         val st = if (isNew) Style(0, null) else Style(tpls[idx].color, tpls[idx].img)
         val origImg = if (isNew) null else tpls[idx].img
         openEditor(
             title = if (isNew) "New Template" else "Edit Template",
-            nameHint = "Name (e.g. Bus)",
+            nameHint = "Name",
             name = if (isNew) "" else tpls[idx].label,
             amountLabel = "Amount",
             amount = if (isNew) null else tpls[idx].amt,
             negLabel = "Expense",
             posLabel = "Income",
             startOnName = isNew,
-            requireName = true,
-            requireAmount = true,
+            requireName = false,
+            requireAmount = false,
             onDelete = if (isNew) null else ({
                 origImg?.let { deleteImg(it) }
                 tpls.removeAt(idx)
@@ -978,7 +987,8 @@ class MainActivity : Activity() {
             }),
             accSel = if (isNew) -1 else tpls[idx].acc,
             style = st
-        ) { nm, v, a ->
+        ) { nm0, v, a ->
+            val nm = if (nm0.isEmpty()) untitled(idx) else nm0
             // old photo is no longer used -> free the file
             if (origImg != null && origImg != st.img) deleteImg(origImg)
             if (isNew) {
