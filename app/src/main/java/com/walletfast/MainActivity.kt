@@ -47,16 +47,26 @@ import java.util.UUID
 
 class MainActivity : Activity() {
 
-    private class Acc(var name: String, var open: Double)
-    private class Tpl(
-        var label: String,
-        var amt: Double,
-        var acc: Int = -1,
+    // id is stable and never reused: transactions and templates point to the id, not to the list position
+    private class Acc(
+        val id: Int,
+        var name: String,
+        var open: Double,
         var color: Int = 0,        // 0 = default card look
         var img: String? = null    // file name inside filesDir/tpl
     )
+
+    private class Tpl(
+        var label: String,
+        var amt: Double,
+        var acc: Int = -1,         // account id, -1 = follow the active account
+        var color: Int = 0,        // 0 = default card look
+        var img: String? = null    // file name inside filesDir/tpl
+    )
+
     private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double)
     private class Style(var color: Int, var img: String?)
+    private class Look(val bmp: Bitmap?, val styled: Boolean, val light: Boolean, val tc: Int, val sub: Int)
 
     // center-crop bitmap drawable (no intrinsic size, so it never changes the card's height)
     private class CropDrawable(private val b: Bitmap) : Drawable() {
@@ -95,7 +105,7 @@ class MainActivity : Activity() {
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    // template color palette (white text stays readable on all of them)
+    // template / account color palette (white text stays readable on all of them)
     private val PALETTE = intArrayOf(
         0xFF4A90D9.toInt(), // light blue
         0xFF2D5BA8.toInt(), // blue
@@ -120,7 +130,8 @@ class MainActivity : Activity() {
     private val accs = ArrayList<Acc>()
     private val tpls = ArrayList<Tpl>()
     private val txs = ArrayList<Tx>()
-    private var active = 0
+    private var nid = 2            // next free account id
+    private var active = 0         // id of the active account
     private var tab = 0            // 0 = Templates (home), 1 = Accounts
     private var edit = false
     private var autoClose = false
@@ -135,7 +146,7 @@ class MainActivity : Activity() {
     private lateinit var fontReg: Typeface
     private lateinit var fontBold: Typeface
 
-    // template images
+    // template / account images
     private val bmpCache = HashMap<String, Bitmap>()
     private var imgCb: ((String?) -> Unit)? = null
     private var onSheetClose: (() -> Unit)? = null
@@ -152,6 +163,7 @@ class MainActivity : Activity() {
         fontReg = resources.getFont(R.font.open_sans_regular)
         fontBold = resources.getFont(R.font.open_sans_bold)
         file = File(filesDir, "transactions.jsonl")
+        migrateStrayFile()
         loadCfg()
         loadTx()
         buildFrame()
@@ -212,9 +224,27 @@ class MainActivity : Activity() {
     // ---------- data ----------
     private fun defaults() {
         accs.clear(); tpls.clear()
-        for (i in 1..5) accs.add(Acc("Account $i", 0.0))
+        accs.add(Acc(0, "Account 1", 0.0))
+        accs.add(Acc(1, "Account 2", 0.0))
+        nid = 2
+        active = 0
         tpls.add(Tpl("Bus", -10.0))
         tpls.add(Tpl("Cafeteria", -50.0))
+    }
+
+    private fun accOf(id: Int): Acc? {
+        for (a in accs) if (a.id == id) return a
+        return null
+    }
+
+    private fun activeAcc(): Acc = accOf(active) ?: accs[0]
+
+    // first free "Account N" name
+    private fun newAccName(): String {
+        val used = accs.map { it.name }.toSet()
+        var n = 1
+        while ("Account $n" in used) n++
+        return "Account $n"
     }
 
     private fun loadCfg() {
@@ -226,34 +256,53 @@ class MainActivity : Activity() {
             val a = o.getJSONArray("accs")
             for (i in 0 until a.length()) {
                 val x = a.getJSONObject(i)
-                accs.add(Acc(x.getString("n"), x.getDouble("o")))
-            }
-            val t = o.getJSONArray("tpls")
-            for (i in 0 until t.length()) {
-                val x = t.getJSONObject(i)
-                tpls.add(
-                    Tpl(
-                        x.getString("l"),
-                        x.getDouble("a"),
-                        x.optInt("c", -1).let { if (it in 0..4) it else -1 },
+                // old configs have no "id": the list position was the id back then
+                accs.add(
+                    Acc(
+                        x.optInt("id", i),
+                        x.getString("n"),
+                        x.getDouble("o"),
                         x.optInt("col", 0),
                         x.optString("img", "").ifEmpty { null }
                     )
                 )
             }
-            active = o.optInt("active", 0).coerceIn(0, 4)
+            if (accs.isEmpty()) { defaults(); return }
+            var top = 0
+            for (ac in accs) if (ac.id > top) top = ac.id
+            nid = Math.max(o.optInt("nid", 0), top + 1)
+            val t = o.getJSONArray("tpls")
+            for (i in 0 until t.length()) {
+                val x = t.getJSONObject(i)
+                val c = x.optInt("c", -1)
+                tpls.add(
+                    Tpl(
+                        x.getString("l"),
+                        x.getDouble("a"),
+                        if (accOf(c) != null) c else -1,
+                        x.optInt("col", 0),
+                        x.optString("img", "").ifEmpty { null }
+                    )
+                )
+            }
+            active = o.optInt("active", 0)
             autoClose = o.optBoolean("ac", false)
             vibrate = o.optBoolean("vib", true)
-            if (accs.size != 5) { defaults(); return }
         } catch (e: Exception) {
             defaults()
             return
         }
+        if (accOf(active) == null) active = accs[0].id
     }
 
     private fun saveCfg() {
         val a = JSONArray()
-        accs.forEach { a.put(JSONObject().put("n", it.name).put("o", it.open)) }
+        accs.forEach {
+            a.put(
+                JSONObject().put("id", it.id).put("n", it.name).put("o", it.open)
+                    .put("col", it.color).put("img", it.img ?: "")
+            )
+        }
         val t = JSONArray()
         tpls.forEach {
             t.put(
@@ -261,21 +310,46 @@ class MainActivity : Activity() {
                     .put("col", it.color).put("img", it.img ?: "")
             )
         }
-        val o = JSONObject().put("accs", a).put("tpls", t).put("active", active).put("ac", autoClose).put("vib", vibrate)
+        val o = JSONObject().put("accs", a).put("tpls", t).put("active", active)
+            .put("nid", nid).put("ac", autoClose).put("vib", vibrate)
         getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", o.toString()).apply()
+    }
+
+    // One-time rescue: an earlier build of this version wrote to "telefon.jsonl" by mistake.
+    // If that file exists, its lines are moved back into transactions.jsonl. Safe to delete later.
+    private fun migrateStrayFile() {
+        val stray = File(filesDir, "telefon.jsonl")
+        if (!stray.exists()) return
+        try {
+            val txt = stray.readText()
+            if (txt.isNotEmpty()) {
+                if (file.exists() && file.length() > 0L) {
+                    val last = file.readText().last()
+                    if (last != '\n') file.appendText("\n")
+                }
+                file.appendText(if (txt.endsWith("\n")) txt else txt + "\n")
+            }
+            stray.delete()
+        } catch (e: Exception) {
+        }
     }
 
     private fun loadTx() {
         val m = LinkedHashMap<String, Tx>()
+        var maxId = -1
         if (file.exists()) {
             file.forEachLine { line ->
                 try {
                     val o = JSONObject(line)
                     when (o.getString("k")) {
-                        "tx" -> m[o.getString("id")] = Tx(
-                            o.getString("id"), o.getLong("t"),
-                            o.getInt("acc").coerceIn(0, 4), o.getString("l"), o.getDouble("a")
-                        )
+                        "tx" -> {
+                            val acc = o.getInt("acc")
+                            if (acc > maxId) maxId = acc
+                            m[o.getString("id")] = Tx(
+                                o.getString("id"), o.getLong("t"),
+                                acc, o.getString("l"), o.getDouble("a")
+                            )
+                        }
                         "undo" -> m.remove(o.getString("ref"))
                         else -> {}
                     }
@@ -283,8 +357,10 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // never hand out an id that old lines in the file already use
+        if (maxId >= nid) nid = maxId + 1
         txs.clear()
-        txs.addAll(m.values)
+        for (x in m.values) if (accOf(x.acc) != null) txs.add(x)
     }
 
     private fun append(o: JSONObject) {
@@ -308,13 +384,104 @@ class MainActivity : Activity() {
         render()
     }
 
-    private fun balOf(i: Int): Double {
-        var s = accs[i].open
-        for (x in txs) if (x.acc == i) s += x.amt
+    // balance of every account in one pass over the transactions (account id -> balance)
+    private fun balMap(): HashMap<Int, Double> {
+        val m = HashMap<Int, Double>()
+        for (a in accs) m[a.id] = a.open
+        for (x in txs) {
+            val c = m[x.acc]
+            if (c != null) m[x.acc] = c + x.amt
+        }
+        for (k in m.keys.toList()) m[k] = r2(m[k] ?: 0.0)
+        return m
+    }
+
+    private fun balOf(a: Acc): Double = balMap()[a.id] ?: 0.0
+
+    private fun totalOf(bals: Map<Int, Double>): Double {
+        var s = 0.0
+        for (a in accs) s += bals[a.id] ?: 0.0
         return r2(s)
     }
 
-    // ---------- template images ----------
+    // ---------- account delete ----------
+
+    // Rewrites transactions.jsonl without any line that belongs to this account
+    // (its transactions and the undo lines that point at them). Returns false if it failed.
+    private fun purgeAccountTx(accId: Int): Boolean {
+        if (!file.exists()) return true
+        return try {
+            val gone = HashSet<String>()
+            file.forEachLine { line ->
+                if (line.isBlank()) return@forEachLine
+                try {
+                    val o = JSONObject(line)
+                    if (o.getString("k") == "tx" && o.getInt("acc") == accId) gone.add(o.getString("id"))
+                } catch (e: Exception) {
+                }
+            }
+            val tmp = File(filesDir, "transactions.jsonl.tmp")
+            tmp.bufferedWriter().use { w ->
+                file.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    var keep = true
+                    try {
+                        val o = JSONObject(line)
+                        when (o.getString("k")) {
+                            "tx" -> if (o.getInt("acc") == accId) keep = false
+                            "undo" -> if (o.getString("ref") in gone) keep = false
+                            else -> {}
+                        }
+                    } catch (e: Exception) {
+                    }
+                    if (keep) {
+                        w.write(line)
+                        w.newLine()
+                    }
+                }
+            }
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun deleteAccount(a: Acc) {
+        if (accs.size <= 1) return
+        if (!purgeAccountTx(a.id)) {
+            snack("Couldn't delete account")
+            return
+        }
+        txs.removeAll { it.acc == a.id }
+        // templates that charged this account go back to "Active account"
+        tpls.forEach { if (it.acc == a.id) it.acc = -1 }
+        a.img?.let { deleteImg(it) }
+        accs.remove(a)
+        if (active == a.id) active = accs[0].id
+        saveCfg()
+        render()
+    }
+
+    // asks first only if the account has any transaction; an empty account is deleted right away
+    private fun requestDeleteAccount(a: Acc) {
+        val n = txs.count { it.acc == a.id }
+        if (n == 0) {
+            deleteAccount(a)
+            return
+        }
+        val what = if (n == 1) "1 transaction" else "$n transactions"
+        openConfirm(
+            "Delete account?",
+            "\u201C${a.name}\u201D and its $what will be permanently deleted. This can't be undone.",
+            "Delete"
+        ) { deleteAccount(a) }
+    }
+
+    // ---------- template / account images ----------
     private fun imgDir() = File(filesDir, "tpl").apply { mkdirs() }
 
     private fun loadBmp(name: String): Bitmap? {
@@ -435,11 +602,12 @@ class MainActivity : Activity() {
     private fun tap(fill: Int, stroke: Int = 0): Drawable =
         RippleDrawable(ColorStateList.valueOf(0x26FFFFFF), box(fill, stroke), null)
 
-    // template card with a photo: cropped image + dark scrim so the text stays readable
-    private fun imgBg(b: Bitmap): Drawable {
+    // card with a photo: cropped image + dark scrim so the text stays readable
+    private fun imgBg(b: Bitmap, stroke: Int = 0): Drawable {
         val scrim = GradientDrawable().apply {
             setColor(0x8C000000.toInt())
             cornerRadius = dp(14).toFloat()
+            if (stroke != 0) setStroke(dp(2), stroke)
         }
         return RippleDrawable(
             ColorStateList.valueOf(0x26FFFFFF),
@@ -454,6 +622,16 @@ class MainActivity : Activity() {
         val g = (c shr 8) and 0xFF
         val b = c and 0xFF
         return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 > 0.62
+    }
+
+    // text colors for a card that has a color or a photo
+    private fun lookOf(color: Int, img: String?): Look {
+        val bmp = img?.let { loadBmp(it) }
+        val styled = bmp != null || color != 0
+        val light = bmp == null && color != 0 && isLight(color)
+        val tc = if (light) BG else if (styled) WHITE else TEXT
+        val sub = if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB
+        return Look(bmp, styled, light, tc, sub)
     }
 
     private val roundOutline = object : ViewOutlineProvider() {
@@ -814,11 +992,13 @@ class MainActivity : Activity() {
 
     // ---------- Templates tab ----------
     private fun buildTemplates(): View {
-        val bals = DoubleArray(5) { balOf(it) }
+        val bals = balMap()
         val root = page()
-        header(root, r2(bals.sum()), "Tap a template to edit it · hold and drag to reorder")
+        header(root, totalOf(bals), "Tap a template to edit it · hold and drag to reorder")
 
         // which account new entries go to
+        val cur = activeAcc()
+        val curBal = bals[cur.id] ?: 0.0
         val ac = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -829,9 +1009,9 @@ class MainActivity : Activity() {
         pressFx(ac, 0.98f)
         val acl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         acl.addView(tv("Active account", 11f, SUB))
-        acl.addView(tv(accs[active].name, 15f, TEXT, true))
+        acl.addView(tv(cur.name, 15f, TEXT, true))
         ac.addView(acl, lp(0, WRAP, 1f))
-        ac.addView(tv(fmt(bals[active]), 15f, if (bals[active] < 0) DANGER else TEXT, true))
+        ac.addView(tv(fmt(curBal), 15f, if (curBal < 0) DANGER else TEXT, true))
         ac.addView(tv("  ›", 18f, SUB))
         root.addView(ac, lp(MATCH, WRAP).apply { setMargins(0, dp(14), 0, 0) })
 
@@ -873,7 +1053,7 @@ class MainActivity : Activity() {
                         if (now - lastTap < gap) return@setOnClickListener
                         lastTap = now
                         lastTapIdx = idx
-                        addTx(t.label, t.amt, if (t.acc in 0..4) t.acc else active)
+                        addTx(t.label, t.amt, accOf(t.acc)?.id ?: active)
                         buzz()
                         if (autoClose) quit() else render()
                     }
@@ -891,7 +1071,8 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             })
-            if (t.acc in 0..4) c.addView(tv(accs[t.acc].name, 12f, if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB).apply {
+            val bound = if (t.acc >= 0) accOf(t.acc) else null
+            if (bound != null) c.addView(tv(bound.name, 12f, if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(6), 0, 0)
             })
@@ -922,7 +1103,7 @@ class MainActivity : Activity() {
             }
             val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             info.addView(tv(tx.label, 15f, TEXT))
-            info.addView(tv(accs[tx.acc].name + " · " + df.format(Date(tx.t)), 12f, SUB))
+            info.addView(tv((accOf(tx.acc)?.name ?: "") + " · " + df.format(Date(tx.t)), 12f, SUB))
             r.addView(info, lp(0, WRAP, 1f))
             r.addView(tv(sgn(tx.amt), 15f, if (tx.amt < 0) DANGER else ACCENT, true))
             r.addView(tv("Undo", 13f, SUB).apply {
@@ -965,41 +1146,76 @@ class MainActivity : Activity() {
     }
 
     // ---------- Accounts tab ----------
+
+    // one account row, used by the Accounts tab and by the account picker:
+    // plain card, solid color, or photo with a dark scrim; the active account gets a green outline
+    private fun accRow(
+        a: Acc, bal: Double, sel: Boolean, plain: Int,
+        minH: Int, vp: Int, balSize: Float, showEdit: Boolean
+    ): LinearLayout {
+        val lk = lookOf(a.color, a.img)
+        val bmp = lk.bmp
+        val accent = if (lk.light) 0xFF0B7A55.toInt() else ACCENT
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = minH
+            setPadding(dp(16), dp(vp), dp(16), dp(vp))
+            background = when {
+                bmp != null -> imgBg(bmp, if (sel) ACCENT else 0)
+                a.color != 0 -> tap(a.color, if (sel) ACCENT else 0)
+                else -> tap(plain, if (sel) ACCENT else BORDER)
+            }
+            if (bmp != null) {
+                clipToOutline = true
+                outlineProvider = roundOutline
+            }
+        }
+        val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        l.addView(tv(a.name, 16f, lk.tc, true))
+        if (sel) l.addView(tv("Active", 12f, accent))
+        r.addView(l, lp(0, WRAP, 1f))
+        val bc = if (bal < 0) (if (lk.light) 0xFFC62828.toInt() else DANGER) else lk.tc
+        r.addView(tv(fmt(bal), balSize, bc, true))
+        if (showEdit) r.addView(tv("Edit", 13f, accent, true).apply { setPadding(dp(12), 0, 0, 0) })
+        return r
+    }
+
     private fun buildAccounts(): View {
-        val bals = DoubleArray(5) { balOf(it) }
+        val bals = balMap()
         val root = page()
-        header(root, r2(bals.sum()), "Tap an account to rename it or set its balance")
+        header(root, totalOf(bals), "Tap an account to rename it, set its balance, change its look or delete it")
 
         root.addView(tv("Accounts", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
-        for (i in 0 until 5) {
-            val sel = i == active
-            val r = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(68)
-                setPadding(dp(16), dp(12), dp(16), dp(12))
-                background = tap(CARD, if (sel) ACCENT else BORDER)
-                setOnClickListener {
-                    if (edit) {
-                        openAccEditor(i)
-                    } else {
-                        active = i
-                        saveCfg()
-                        render()
-                    }
+        for (a in accs) {
+            val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
+            r.setOnClickListener {
+                if (edit) {
+                    openAccEditor(a)
+                } else {
+                    active = a.id
+                    saveCfg()
+                    render()
                 }
             }
             pressFx(r, 0.98f)
-            val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            l.addView(tv(accs[i].name, 16f, TEXT, true))
-            if (sel) l.addView(tv("Active", 12f, ACCENT))
-            r.addView(l, lp(0, WRAP, 1f))
-            r.addView(tv(fmt(bals[i]), 18f, if (bals[i] < 0) DANGER else TEXT, true))
-            if (edit) r.addView(tv("Edit", 13f, ACCENT, true).apply { setPadding(dp(12), 0, 0, 0) })
             root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
+
+        val add = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            minimumHeight = dp(68)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = tap(BG, BORDER)
+            setOnClickListener { openNewAccount() }
+        }
+        pressFx(add, 0.98f)
+        add.addView(tv("+ New Account", 16f, SUB, true).apply { gravity = Gravity.CENTER })
+        root.addView(add, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         return root
     }
+
     // ---------- account picker ----------
     private fun openAccountPicker() {
         val f = frame ?: return
@@ -1028,27 +1244,15 @@ class MainActivity : Activity() {
 
         sh.addView(tv("Select Account", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(8)) })
 
-        for (i in 0 until 5) {
-            val sel = i == active
-            val bal = balOf(i)
-            val r = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(64)
-                setPadding(dp(16), dp(10), dp(16), dp(10))
-                background = tap(BG, if (sel) ACCENT else BORDER)
-                setOnClickListener {
-                    active = i
-                    saveCfg()
-                    render() // render() also closes the sheet, we stay on the Templates screen
-                }
+        val bals = balMap()
+        for (a in accs) {
+            val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, BG, dp(64), 10, 17f, false)
+            r.setOnClickListener {
+                active = a.id
+                saveCfg()
+                render() // render() also closes the sheet, we stay on the Templates screen
             }
             pressFx(r, 0.98f)
-            val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            l.addView(tv(accs[i].name, 16f, TEXT, true))
-            if (sel) l.addView(tv("Active", 12f, ACCENT))
-            r.addView(l, lp(0, WRAP, 1f))
-            r.addView(tv(fmt(bal), 17f, if (bal < 0) DANGER else TEXT, true))
             sh.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
 
@@ -1060,11 +1264,64 @@ class MainActivity : Activity() {
         f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
         sheet = scrim
     }
+
+    // ---------- confirm sheet ----------
+    private fun openConfirm(title: String, msg: String, okLabel: String, onOk: () -> Unit) {
+        val f = frame ?: return
+        if (sheet != null) return
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeSheet() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+        sh.addView(tv(title, 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(6)) })
+        sh.addView(tv(msg, 14f, SUB).apply { setPadding(dp(2), 0, dp(2), dp(14)) })
+
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val cancelBtn = tv("Cancel", 16f, SUB, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(KEY)
+            setOnClickListener { closeSheet() }
+        }
+        pressFx(cancelBtn, 0.97f)
+        btns.addView(cancelBtn, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        val okBtn = tv(okLabel, 16f, BG, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(DANGER)
+            setOnClickListener {
+                closeSheet()
+                onOk()
+            }
+        }
+        pressFx(okBtn, 0.97f)
+        btns.addView(okBtn, lp(0, dp(52), 1.5f))
+        sh.addView(btns)
+
+        scrim.addView(sh, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        sheet = scrim
+    }
+
     // ---------- editors ----------
 
-    private fun openAccEditor(i: Int) {
-        val a = accs[i]
-        val cur = balOf(i)
+    private fun openAccEditor(a: Acc) {
+        val cur = balOf(a)
+        val st = Style(a.color, a.img)
+        val origImg = a.img
         openEditor(
             title = "Edit Account",
             nameHint = "Account name",
@@ -1076,10 +1333,40 @@ class MainActivity : Activity() {
             startOnName = false,
             requireName = false,
             requireAmount = false,
-            onDelete = null
+            // the last remaining account can't be deleted
+            onDelete = if (accs.size > 1) ({ requestDeleteAccount(a) }) else null,
+            style = st
         ) { nm, v, _ ->
             if (nm.isNotEmpty()) a.name = nm
             a.open = v - (cur - a.open)
+            // old photo is no longer used -> free the file
+            if (origImg != null && origImg != st.img) deleteImg(origImg)
+            a.color = st.color
+            a.img = st.img
+            saveCfg()
+            render()
+        }
+    }
+
+    private fun openNewAccount() {
+        val st = Style(0, null)
+        openEditor(
+            title = "New Account",
+            nameHint = "Account name",
+            name = "",
+            amountLabel = "Starting balance",
+            amount = null,
+            negLabel = "Negative",
+            posLabel = "Positive",
+            startOnName = true,
+            requireName = false,
+            requireAmount = false,
+            onDelete = null,
+            style = st,
+            defaultNeg = false
+        ) { nm, v, _ ->
+            val id = nid++
+            accs.add(Acc(id, if (nm.isEmpty()) newAccName() else nm, v, st.color, st.img))
             saveCfg()
             render()
         }
@@ -1115,7 +1402,7 @@ class MainActivity : Activity() {
                 saveCfg()
                 render()
             }),
-            accSel = if (isNew) -1 else tpls[idx].acc,
+            accSel = if (isNew) -1 else tpls[idx].acc.let { if (accOf(it) != null) it else -1 },
             style = st
         ) { nm0, v, a ->
             val nm = if (nm0.isEmpty()) untitled(idx) else nm0
@@ -1177,12 +1464,13 @@ class MainActivity : Activity() {
         onDelete: (() -> Unit)?,
         accSel: Int? = null,
         style: Style? = null,
+        defaultNeg: Boolean = true,
         onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
         if (sheet != null) return
 
-        var neg = (amount ?: -1.0) < 0
+        var neg = if (amount == null) defaultNeg else amount < 0
         val buf = StringBuilder(if (amount == null) "" else raw(Math.abs(amount)))
         var pick = accSel ?: -1   // -1 = follow the active account
 
@@ -1275,11 +1563,12 @@ class MainActivity : Activity() {
         amtBox.addView(seg)
         sh.addView(amtBox, lp(MATCH, WRAP))
 
-        // account chips: only shown in the template editor
+        // account chips: only shown in the template editor (chipIds holds the account id of each chip, -1 = active)
         val chips = ArrayList<TextView>()
+        val chipIds = ArrayList<Int>()
         fun styleChips() {
             chips.forEachIndexed { n, c ->
-                val on = (n - 1) == pick
+                val on = chipIds[n] == pick
                 c.setTextColor(if (on) ACCENT else SUB)
                 c.background = box(if (on) BG else KEY, if (on) ACCENT else 0)
             }
@@ -1287,14 +1576,18 @@ class MainActivity : Activity() {
         if (accSel != null) {
             sh.addView(tv("Charged from", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
             val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (n in -1 until 5) {
-                val label = if (n < 0) "Active account" else accs[n].name
-                val chip = tv(label, 13f, SUB, true).apply {
+            val opts = ArrayList<Pair<Int, String>>()
+            opts.add(Pair(-1, "Active account"))
+            for (a in accs) opts.add(Pair(a.id, a.name))
+            for (o in opts) {
+                val id = o.first
+                val chip = tv(o.second, 13f, SUB, true).apply {
                     setPadding(dp(14), dp(9), dp(14), dp(9))
-                    setOnClickListener { pick = n; styleChips() }
+                    setOnClickListener { pick = id; styleChips() }
                 }
                 pressFx(chip, 0.96f)
                 chips.add(chip)
+                chipIds.add(id)
                 chipRow.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
             }
             val hs = HorizontalScrollView(this).apply {
@@ -1305,7 +1598,7 @@ class MainActivity : Activity() {
             styleChips()
         }
 
-        // look: card color or photo (template editor only). Color and photo exclude each other.
+        // look: card color or photo (templates and accounts). Color and photo exclude each other.
         if (style != null) {
             sh.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
             val swatches = ArrayList<TextView>()
