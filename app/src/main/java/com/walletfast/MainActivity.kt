@@ -1237,6 +1237,7 @@ class MainActivity : Activity() {
             }
             c.addView(tv(t.label, 23f, tc, true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
+                t.amt == 0.0 -> if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB   // dimmer than the name
                 light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
                 t.amt < 0 -> DANGER
                 else -> ACCENT
@@ -1342,7 +1343,7 @@ class MainActivity : Activity() {
         info.addView(tv(tx.label, 15f, TEXT))
         info.addView(tv((accOf(tx.acc)?.name ?: "") + " · " + df.format(Date(tx.t)), 12f, SUB))
         r.addView(info, lp(0, WRAP, 1f))
-        r.addView(tv(sgn(tx.amt), 15f, if (tx.amt < 0) DANGER else ACCENT, true))
+        r.addView(tv(sgn(tx.amt), 15f, if (tx.amt == 0.0) SUB else if (tx.amt < 0) DANGER else ACCENT, true))
         r.addView(tv("Undo", 13f, SUB).apply {
             setPadding(dp(14), dp(10), dp(6), dp(10))
             setOnClickListener {
