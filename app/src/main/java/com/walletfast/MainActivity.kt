@@ -33,6 +33,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.AccelerateInterpolator
 import android.view.inputmethod.EditorInfo
@@ -135,6 +136,7 @@ class MainActivity : Activity() {
     private val DUR = 120L
     private val DOWN_DUR = 80L
     private val ease = DecelerateInterpolator()
+    private val easeIO = AccelerateDecelerateInterpolator()
     private val UNDO_DUR = 60L
     private val easeOut = AccelerateInterpolator()
 
@@ -146,6 +148,7 @@ class MainActivity : Activity() {
     private var tab = 0            // 0 = Templates (home), 1 = Accounts
     private var screen = 0         // 0 = main (tabs), 1 = Settings, 2 = Import & Export (full-screen pages)
     private var picking = false    // a file picker is open: don't reset the screen when we come back
+    private var enter = 0          // transition played by the next render(): 1 = Settings opening, 2 = Settings closing, 3 = quick fade
     private var edit = false
     private var autoClose = false
     private var vibrate = true     // Vibration setting (Edit mode)
@@ -208,8 +211,8 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         when {
             sheet != null -> closeSheet()
-            screen == 2 -> { screen = 1; render() }
-            screen == 1 -> { screen = 0; render() }
+            screen == 2 -> { screen = 1; enter = 3; render() }
+            screen == 1 -> { screen = 0; enter = 2; render() }
             tab != 0 -> { tab = 0; edit = false; navAnim = true; render() }
             else -> super.onBackPressed()
         }
@@ -813,13 +816,12 @@ class MainActivity : Activity() {
         if (sheet != null) closeSheet()
         val s = sv ?: return
         s.removeAllViews()
-        s.addView(
-            when (screen) {
-                1 -> buildSettings()
-                2 -> buildBackup()
-                else -> if (tab == 0) buildTemplates() else buildAccounts()
-            }
-        )
+        val v = when (screen) {
+            1 -> buildSettings()
+            2 -> buildBackup()
+            else -> if (tab == 0) buildTemplates() else buildAccounts()
+        }
+        s.addView(v)
         // the bottom nav belongs to the main screen only, Settings pages are full screen
         navHost?.visibility = if (screen == 0) View.VISIBLE else View.GONE
         val key = if (screen == 0) tab else 10 + screen
@@ -831,6 +833,31 @@ class MainActivity : Activity() {
             }
             shownKey = key
         }
+        when (enter) {
+            1, 2 -> cascadeIn(v)
+            3 -> fadeIn(v)
+        }
+        enter = 0
+    }
+
+    // page content drops in below the header, one block after the other; the arrow in the header stays put
+    private fun cascadeIn(v: View) {
+        val g = v as? ViewGroup ?: return
+        for (i in 0 until g.childCount) {
+            val first = g.getChildAt(i)
+            // first row is the header: only its text column moves, the icon does not
+            val t = if (i == 0 && first is ViewGroup && first.childCount > 0) first.getChildAt(0) else first
+            t.alpha = 0f
+            t.translationY = -dp(14).toFloat()
+            t.animate().alpha(1f).translationY(0f)
+                .setStartDelay(Math.min(i, 5) * 18L)
+                .setDuration(200L).setInterpolator(ease).start()
+        }
+    }
+
+    private fun fadeIn(v: View) {
+        v.alpha = 0f
+        v.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
     }
 
     private fun buildNav(): View {
@@ -897,36 +924,60 @@ class MainActivity : Activity() {
         return wrap
     }
 
-    private fun header(root: LinearLayout, total: Double, hint: String) {
+    // header row shared by the main screen and the Settings page, so the icon sits in exactly the same spot:
+    // the arrow points down on the main screen and up while Settings is open, and turns when the page changes
+    private fun topRow(root: LinearLayout, col: View, settingsOpen: Boolean) {
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        top.addView(col, lp(0, WRAP, 1f))
+        if (edit && !settingsOpen) {
+            top.addView(tv("Done", 15f, ACCENT, true).apply {
+                setPadding(dp(12), dp(10), dp(4), dp(10))
+                setOnClickListener { edit = false; render() }
+            })
+        } else {
+            val btn = FrameLayout(this).apply {
+                setOnClickListener {
+                    if (settingsOpen) {
+                        screen = 0
+                        enter = 2
+                    } else {
+                        screen = 1
+                        enter = 1
+                    }
+                    render()
+                }
+            }
+            val to = if (settingsOpen) 180f else 0f
+            val from = when (enter) {
+                1 -> 0f
+                2 -> 180f
+                else -> to
+            }
+            val ic = ImageView(this).apply {
+                setImageResource(R.drawable.ic_chevron_down)
+                setColorFilter(MENU_ICON)
+                alpha = 0.8f
+                rotation = from
+            }
+            if (from != to) ic.post { ic.animate().rotation(to).setDuration(220L).setInterpolator(easeIO).start() }
+            btn.addView(ic, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
+            pressFx(btn, 0.88f)
+            top.addView(btn, lp(dp(48), dp(48)).apply { setMargins(0, 0, -dp(8), 0) })
+        }
+        root.addView(top)
+    }
+
+    private fun header(root: LinearLayout, total: Double, hint: String) {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
         }
         col.addView(tv("Total Balance", 15f, SUB))
         col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, true))
-        top.addView(col, lp(0, WRAP, 1f))
-        if (edit) {
-            top.addView(tv("Done", 15f, ACCENT, true).apply {
-                setPadding(dp(12), dp(10), dp(4), dp(10))
-                setOnClickListener { edit = false; render() }
-            })
-        } else {
-            // settings: soft dark-gray chevron at 80% opacity, opens the full-screen Settings page
-            val btn = FrameLayout(this).apply { setOnClickListener { screen = 1; render() } }
-            val ic = ImageView(this).apply {
-                setImageResource(R.drawable.ic_chevron_down)
-                setColorFilter(MENU_ICON)
-                alpha = 0.8f
-            }
-            btn.addView(ic, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
-            pressFx(btn, 0.88f)
-            top.addView(btn, lp(dp(48), dp(48)).apply { setMargins(0, 0, -dp(8), 0) })
-        }
-        root.addView(top)
+        topRow(root, col, false)
         if (edit) root.addView(tv(hint, 12f, SUB).apply { setPadding(dp(2), dp(6), 0, 0) })
     }
 
@@ -1321,16 +1372,24 @@ class MainActivity : Activity() {
 
     private fun buildSettings(): View {
         val root = page()
-        pageTop(root, "Settings") { screen = 0; render() }
+        // same two-line header as the main screen, so the arrow stays exactly where it was tapped
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+        }
+        col.addView(tv("Wallet Fast", 15f, SUB))
+        col.addView(tv("Settings", 46f, TEXT, true))
+        topRow(root, col, true)
 
         // edit mode (reorder / rename / delete) is entered from here
         root.addView(
             menuRow("Edit templates & accounts", "Reorder, rename, change look or delete") {
                 edit = true
                 screen = 0
+                enter = 2
                 render()
             },
-            lp(MATCH, WRAP)
+            lp(MATCH, WRAP).apply { setMargins(0, dp(14), 0, 0) }
         )
 
         fun setting(label: String, on: Boolean, top: Int, change: (Boolean) -> Unit) {
@@ -1349,7 +1408,7 @@ class MainActivity : Activity() {
 
         // Import & Export is always the last item
         root.addView(
-            menuRow("Import & Export", "Back up or restore your data") { screen = 2; render() },
+            menuRow("Import & Export", "Back up or restore your data") { screen = 2; enter = 3; render() },
             lp(MATCH, WRAP).apply { setMargins(0, dp(28), 0, 0) }
         )
         return root
@@ -1357,7 +1416,7 @@ class MainActivity : Activity() {
 
     private fun buildBackup(): View {
         val root = page()
-        pageTop(root, "Import & Export") { screen = 1; render() }
+        pageTop(root, "Import & Export") { screen = 1; enter = 3; render() }
         root.addView(
             tv(
                 "A backup keeps your accounts, templates, transactions and photos in one file. " +
