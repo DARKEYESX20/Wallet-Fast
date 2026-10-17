@@ -43,9 +43,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+
 
 class MainActivity : Activity() {
 
@@ -1250,42 +1252,182 @@ class MainActivity : Activity() {
         cell(add)
         root.addView(grid)
 
-        // history
-        root.addView(tv("Recent Activity", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
-        if (txs.isEmpty()) root.addView(tv("No transactions yet", 14f, SUB))
-        val df = SimpleDateFormat("d MMM, HH:mm", Locale.US)
-        for (tx in txs.asReversed().take(15)) {
-            val r = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(8), dp(8), dp(8))
-                background = box(CARD)
-            }
-            val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            info.addView(tv(tx.label, 15f, TEXT))
-            info.addView(tv((accOf(tx.acc)?.name ?: "") + " · " + df.format(Date(tx.t)), 12f, SUB))
-            r.addView(info, lp(0, WRAP, 1f))
-            r.addView(tv(sgn(tx.amt), 15f, if (tx.amt < 0) DANGER else ACCENT, true))
-            r.addView(tv("Undo", 13f, SUB).apply {
-                setPadding(dp(14), dp(10), dp(6), dp(10))
-                setOnClickListener {
-                    isClickable = false // no double undo while the row slides out
-                    r.animate().alpha(0f).translationX(dp(40).toFloat()).setDuration(UNDO_DUR).setInterpolator(easeOut)
-                        .withEndAction { undo(tx) }
-                        .start()
-                }
-            })
-            // only the row that was just added fades in; the rest stay still
-            if (tx.id == newTxId) {
-                r.alpha = 0f
-                r.translationY = -dp(8).toFloat()
-                r.post { r.animate().alpha(1f).translationY(0f).setDuration(DUR).setInterpolator(ease).start() }
-            }
-            root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) })
-        }
-        newTxId = null
+        buildHistory(root)
 
         return root
+    }
+
+    // ---------- history: months and years ----------
+
+    private class Tot(var exp: Double = 0.0, var inc: Double = 0.0)
+
+    // folder key -> opened (true) or closed (false) by the user; lives until the app is closed
+    private val fold = HashMap<String, Boolean>()
+    private val shown = HashMap<Int, Int>()   // month key -> how many rows are visible
+    private val PAGE = 15
+
+    private fun totOf(list: List<Tx>): Tot {
+        val t = Tot()
+        for (x in list) {
+            if (x.amt < 0) t.exp -= x.amt else t.inc += x.amt
+        }
+        t.exp = r2(t.exp)
+        t.inc = r2(t.inc)
+        return t
+    }
+
+    private fun sumLine(label: String, v: Double, color: Int): View {
+        val l = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
+        l.addView(tv(label, 11f, SUB).apply { setPadding(0, 0, dp(6), 0) })
+        l.addView(tv(fmt(v), 13f, if (v == 0.0) SUB else color, true))
+        return l
+    }
+
+    // a month or year row: title + count on the left, Expenses / Incomes on the right, arrow at the end
+    private fun folderRow(title: String, sub: String, tot: Tot, open: Boolean, onClick: () -> Unit): View {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(12), dp(10))
+            background = tap(CARD, BORDER)
+            setOnClickListener { onClick() }
+        }
+        val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        l.addView(tv(title, 15f, TEXT, true))
+        l.addView(tv(sub, 12f, SUB))
+        r.addView(l, lp(0, WRAP, 1f))
+        val s = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+        }
+        s.addView(sumLine("Expenses", tot.exp, DANGER))
+        s.addView(sumLine("Incomes", tot.inc, ACCENT))
+        r.addView(s, lp(WRAP, WRAP))
+        r.addView(chev(SUB, if (open) 180f else 0f), lp(dp(20), dp(20)).apply { setMargins(dp(8), 0, 0, 0) })
+        pressFx(r, 0.98f)
+        return r
+    }
+
+    private fun txRow(tx: Tx, df: SimpleDateFormat): View {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+            background = box(CARD)
+        }
+        val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        info.addView(tv(tx.label, 15f, TEXT))
+        info.addView(tv((accOf(tx.acc)?.name ?: "") + " · " + df.format(Date(tx.t)), 12f, SUB))
+        r.addView(info, lp(0, WRAP, 1f))
+        r.addView(tv(sgn(tx.amt), 15f, if (tx.amt < 0) DANGER else ACCENT, true))
+        r.addView(tv("Undo", 13f, SUB).apply {
+            setPadding(dp(14), dp(10), dp(6), dp(10))
+            setOnClickListener {
+                isClickable = false // no double undo while the row slides out
+                r.animate().alpha(0f).translationX(dp(40).toFloat()).setDuration(UNDO_DUR).setInterpolator(easeOut)
+                    .withEndAction { undo(tx) }
+                    .start()
+            }
+        })
+        // only the row that was just added fades in; the rest stay still
+        if (tx.id == newTxId) {
+            r.alpha = 0f
+            r.translationY = -dp(8).toFloat()
+            r.post { r.animate().alpha(1f).translationY(0f).setDuration(DUR).setInterpolator(ease).start() }
+        }
+        return r
+    }
+
+    private fun buildHistory(root: LinearLayout) {
+        root.addView(tv("Recent Activity", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
+        if (txs.isEmpty()) {
+            root.addView(tv("No transactions yet", 14f, SUB))
+            newTxId = null
+            return
+        }
+        val df = SimpleDateFormat("d MMM, HH:mm", Locale.US)
+        val mf = SimpleDateFormat("MMMM yyyy", Locale.US)
+        val cal = Calendar.getInstance()
+        val curYear = cal.get(Calendar.YEAR)
+        val nowKey = curYear * 12 + cal.get(Calendar.MONTH)
+
+        // month key (year * 12 + month) -> its transactions; newest month first
+        val months = LinkedHashMap<Int, ArrayList<Tx>>()
+        for (x in txs.sortedByDescending { it.t }) {
+            cal.timeInMillis = x.t
+            months.getOrPut(cal.get(Calendar.YEAR) * 12 + cal.get(Calendar.MONTH)) { ArrayList() }.add(x)
+        }
+
+        fun month(key: Int, indent: Int) {
+            val list = months[key] ?: return
+            val fk = "m$key"
+            val open = fold[fk] ?: (key == nowKey)   // the current month starts open, the others closed
+            root.addView(
+                folderRow(mf.format(Date(list[0].t)), cnt(list.size, "transaction"), totOf(list), open) {
+                    fold[fk] = !open
+                    if (open) shown.remove(key)       // closing resets it back to the first 15
+                    render()
+                },
+                lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) }
+            )
+            if (open) {
+                val lim = shown[key] ?: PAGE
+                for (x in list.take(lim)) {
+                    root.addView(txRow(x, df), lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) })
+                }
+                if (list.size > lim) {
+                    val more = tv("Show more (${list.size - lim} left)", 13f, SUB, true).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(12), dp(12), dp(12), dp(12))
+                        background = tap(KEY)
+                        setOnClickListener {
+                            shown[key] = Int.MAX_VALUE   // show everything in this month
+                            render()
+                        }
+                    }
+                    pressFx(more, 0.97f)
+                    root.addView(more, lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) })
+                } else if (list.size > PAGE) {
+                    val less = tv("Show less", 13f, SUB, true).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(12), dp(12), dp(12), dp(12))
+                        background = tap(KEY)
+                        setOnClickListener {
+                            fold[fk] = false
+                            shown.remove(key)            // close the whole month
+                            render()                     // next time it opens with the first 15 again
+                        }
+                    }
+                    pressFx(less, 0.97f)
+                    root.addView(less, lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) })
+                }
+            }
+        }
+
+        // this year's months stay on top level, months of earlier years go under a year folder
+        val past = LinkedHashMap<Int, ArrayList<Int>>()
+        for (k in months.keys) {
+            val y = k / 12
+            if (y >= curYear) month(k, 0) else past.getOrPut(y) { ArrayList() }.add(k)
+        }
+        for ((y, keys) in past) {
+            val all = ArrayList<Tx>()
+            for (k in keys) months[k]?.let { all.addAll(it) }
+            val fk = "y$y"
+            val open = fold[fk] ?: false
+            root.addView(
+                folderRow(y.toString(), cnt(keys.size, "month"), totOf(all), open) {
+                    fold[fk] = !open
+                    render()
+                },
+                lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) }
+            )
+            if (open) for (k in keys) month(k, dp(14))
+        }
+        newTxId = null
     }
 
     // ---------- Accounts tab ----------
