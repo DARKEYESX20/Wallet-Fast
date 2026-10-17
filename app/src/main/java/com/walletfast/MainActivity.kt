@@ -2000,13 +2000,12 @@ class MainActivity : Activity() {
         }
     }
 
-    // Untitled, Untitled 1, Untitled 2 ... (skip = index of the template being edited, -1 for new)
+    // Template 1, Template 2 ... (skip = index of the template being edited, -1 for new)
     private fun untitled(skip: Int): String {
         val used = tpls.filterIndexed { i, _ -> i != skip }.map { it.label }.toSet()
-        if ("Untitled" !in used) return "Untitled"
         var n = 1
-        while ("Untitled $n" in used) n++
-        return "Untitled $n"
+        while ("Template $n" in used) n++
+        return "Template $n"
     }
 
     private fun openTplEditor(idx: Int) {
