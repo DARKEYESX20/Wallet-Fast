@@ -75,7 +75,7 @@ class MainActivity : Activity() {
     // everything the config JSON holds (also used by backups)
     private class Cfg(
         val accs: List<Acc>, val tpls: List<Tpl>, val active: Int,
-        val nid: Int, val autoClose: Boolean, val vibrate: Boolean
+        val nid: Int, val autoClose: Boolean, val vibrate: Boolean, val lang: String
     )
 
     // a parsed backup file, checked and ready to be applied
@@ -154,6 +154,90 @@ class MainActivity : Activity() {
     private var edit = false
     private var autoClose = false
     private var vibrate = true     // Vibration setting (Edit mode)
+    private var lang = "tr"        // "tr" or "en", Turkish is the default
+
+    private fun loc(): Locale = if (lang == "tr") Locale.forLanguageTag("tr-TR") else Locale.US
+
+    // English text -> Turkish text. Anything not in this list is shown as it is.
+    private val TR = mapOf(
+        "Total Balance" to "Toplam Bakiye",
+        "Active account" to "Aktif hesap",
+        "Active" to "Aktif",
+        "Templates" to "Şablonlar",
+        "Accounts" to "Hesaplar",
+        "Account" to "Hesap",
+        "Template" to "Şablon",
+        "+ New Template" to "+ Yeni Şablon",
+        "+ New Account" to "+ Yeni Hesap",
+        "Recent Activity" to "Son Hareketler",
+        "No transactions yet" to "Henüz işlem yok",
+        "Show less" to "Daha az göster",
+        "Expenses" to "Giderler",
+        "Incomes" to "Gelirler",
+        "Undo" to "Geri al",
+        "Edit" to "Düzenle",
+        "Done" to "Bitti",
+        "Delete" to "Sil",
+        "Cancel" to "İptal",
+        "Save" to "Kaydet",
+        "Import" to "İçe aktar",
+        "Name" to "Ad",
+        "Amount" to "Tutar",
+        "Look" to "Görünüm",
+        "Charged from" to "Çekilecek hesap",
+        "Expense" to "Gider",
+        "Income" to "Gelir",
+        "Negative" to "Eksi",
+        "Positive" to "Artı",
+        "Image ✓" to "Görsel ✓",
+        "Choose image" to "Görsel seç",
+        "Select Account" to "Hesap Seç",
+        "Edit Account" to "Hesabı Düzenle",
+        "New Account" to "Yeni Hesap",
+        "Edit Template" to "Şablonu Düzenle",
+        "New Template" to "Yeni Şablon",
+        "Account name" to "Hesap adı",
+        "Current balance" to "Mevcut bakiye",
+        "Starting balance" to "Başlangıç bakiyesi",
+        "Enter a name" to "Bir ad gir",
+        "Enter an amount" to "Bir tutar gir",
+        "Settings" to "Ayarlar",
+        "Language" to "Dil",
+        "Vibration" to "Titreşim",
+        "Save & close app on template tap" to "Şablona dokununca kaydet ve uygulamayı kapat",
+        "Edit templates & accounts" to "Şablonları ve hesapları düzenle",
+        "Reorder, rename, change look or delete" to "Sırala, yeniden adlandır, görünümü değiştir veya sil",
+        "Import & Export" to "İçe ve Dışa Aktar",
+        "Back up or restore your data" to "Verilerini yedekle veya geri yükle",
+        "Export data" to "Verileri dışa aktar",
+        "Save a backup file" to "Yedek dosyası kaydet",
+        "Import data" to "Verileri içe aktar",
+        "Restore from a backup file" to "Yedek dosyasından geri yükle",
+        "A backup keeps your accounts, templates, transactions and photos in one file. Importing replaces everything that is on this phone right now." to
+                "Yedek dosyası hesaplarını, şablonlarını, işlemlerini ve fotoğraflarını tek dosyada tutar. İçe aktarmak şu an telefondaki her şeyi değiştirir.",
+        "Tap a template to edit it · hold and drag to reorder" to "Düzenlemek için bir şablona dokun · sıralamak için basılı tutup sürükle",
+        "Tap an account to rename it, set its balance, change its look or delete it · hold and drag to reorder" to
+                "Yeniden adlandırmak, bakiyesini ayarlamak, görünümünü değiştirmek veya silmek için bir hesaba dokun · sıralamak için basılı tutup sürükle",
+        "Delete account?" to "Hesap silinsin mi?",
+        "Import this backup?" to "Bu yedek içe aktarılsın mı?",
+        "Couldn't save entry" to "Kayıt kaydedilemedi",
+        "Couldn't delete account" to "Hesap silinemedi",
+        "No gallery app found" to "Galeri uygulaması bulunamadı",
+        "Couldn't load image" to "Görsel yüklenemedi",
+        "No file manager found" to "Dosya yöneticisi bulunamadı",
+        "Backup saved" to "Yedek kaydedildi",
+        "Couldn't save backup" to "Yedek kaydedilemedi",
+        "File is too big" to "Dosya çok büyük",
+        "This is not a valid Wallet Fast backup" to "Bu geçerli bir Wallet Fast yedeği değil",
+        "Couldn't import" to "İçe aktarılamadı",
+        "Data imported" to "Veriler içe aktarıldı",
+        "transaction" to "işlem",
+        "month" to "ay",
+        "account" to "hesap",
+        "template" to "şablon"
+    )
+
+    private fun s(en: String): String = if (lang == "tr") (TR[en] ?: en) else en
     private var lastTap = 0L
     private var lastTapIdx = -1    // which template was tapped last (for per-template cooldown)
     private var navAnim = false    // play the nav pill fade-in on the next render
@@ -287,12 +371,12 @@ class MainActivity : Activity() {
     // ---------- data ----------
     private fun defaults() {
         accs.clear(); tpls.clear()
-        accs.add(Acc(0, "Account 1", 0.0))
-        accs.add(Acc(1, "Account 2", 0.0))
+        accs.add(Acc(0, "${s("Account")} 1", 0.0))
+        accs.add(Acc(1, "${s("Account")} 2", 0.0))
         nid = 2
         active = 0
-        tpls.add(Tpl("Bus", -10.0))
-        tpls.add(Tpl("Cafeteria", -50.0))
+        tpls.add(Tpl(if (lang == "tr") "Otobüs" else "Bus", -10.0))
+        tpls.add(Tpl(if (lang == "tr") "Yemekhane" else "Cafeteria", -50.0))
     }
 
     private fun accOf(id: Int): Acc? {
@@ -305,9 +389,10 @@ class MainActivity : Activity() {
     // first free "Account N" name
     private fun newAccName(): String {
         val used = accs.map { it.name }.toSet()
+        val p = s("Account")
         var n = 1
-        while ("Account $n" in used) n++
-        return "Account $n"
+        while ("$p $n" in used) n++
+        return "$p $n"
     }
 
     private fun loadCfg() {
@@ -365,7 +450,8 @@ class MainActivity : Activity() {
             list, tl, act,
             Math.max(o.optInt("nid", 0), top + 1),
             o.optBoolean("ac", false),
-            o.optBoolean("vib", true)
+            o.optBoolean("vib", true),
+            o.optString("lang", "tr").let { if (it == "en") "en" else "tr" }
         )
     }
 
@@ -376,6 +462,7 @@ class MainActivity : Activity() {
         nid = c.nid
         autoClose = c.autoClose
         vibrate = c.vibrate
+        lang = c.lang
     }
 
     private fun cfgJson(): JSONObject {
@@ -394,7 +481,7 @@ class MainActivity : Activity() {
             )
         }
         return JSONObject().put("accs", a).put("tpls", t).put("active", active)
-            .put("nid", nid).put("ac", autoClose).put("vib", vibrate)
+            .put("nid", nid).put("ac", autoClose).put("nid", nid).put("ac", autoClose).put("vib", vibrate).put("lang", lang)
     }
 
     private fun saveCfg() {
@@ -559,12 +646,12 @@ class MainActivity : Activity() {
             deleteAccount(a)
             return
         }
-        val what = if (n == 1) "1 transaction" else "$n transactions"
-        openConfirm(
-            "Delete account?",
-            "\u201C${a.name}\u201D and its $what will be permanently deleted. This can't be undone.",
-            "Delete"
-        ) { deleteAccount(a) }
+        val what = cnt(n, "transaction")
+        val msg = if (lang == "tr")
+            "\u201C${a.name}\u201D ve içindeki $what kalıcı olarak silinecek. Bu işlem geri alınamaz."
+        else
+            "\u201C${a.name}\u201D and its $what will be permanently deleted. This can't be undone."
+        openConfirm("Delete account?", msg, "Delete") { deleteAccount(a) }
     }
 
     // ---------- template / account images ----------
@@ -677,8 +764,8 @@ class MainActivity : Activity() {
     // ---------- helpers ----------
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun tv(text: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
-        this.text = text
+    private fun tv(text: String, size: Float, color: Int, bold: Boolean = false, user: Boolean = false) = TextView(this).apply {
+        this.text = if (user) text else s(text)
         textSize = size
         setTextColor(color)
         typeface = if (bold) fontBold else fontReg
@@ -1168,7 +1255,7 @@ class MainActivity : Activity() {
         pressFx(ac, 0.98f)
         val acl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         acl.addView(tv("Active account", 11f, SUB))
-        acl.addView(tv(cur.name, 15f, TEXT, true))
+        acl.addView(tv(cur.name, 15f, TEXT, true, user = true))
         ac.addView(acl, lp(0, WRAP, 1f))
         ac.addView(tv(fmt(curBal), 15f, if (curBal < 0) DANGER else TEXT, true))
         ac.addView(tv("  ›", 18f, SUB))
@@ -1235,7 +1322,7 @@ class MainActivity : Activity() {
                     true
                 }
             }
-            c.addView(tv(t.label, 23f, tc, true).apply { gravity = Gravity.CENTER })
+            c.addView(tv(t.label, 23f, tc, true, user = true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
                 t.amt == 0.0 -> if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB   // dimmer than the name
                 light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
@@ -1247,7 +1334,7 @@ class MainActivity : Activity() {
                 setPadding(0, dp(4), 0, 0)
             })
             val bound = if (t.acc >= 0) accOf(t.acc) else null
-            if (bound != null) c.addView(tv(bound.name, 12f, if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB).apply {
+            if (bound != null) c.addView(tv(bound.name, 12f, if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB, false, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(6), 0, 0)
             })
@@ -1340,7 +1427,7 @@ class MainActivity : Activity() {
             background = box(CARD)
         }
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        info.addView(tv(tx.label, 15f, TEXT))
+        info.addView(tv(tx.label, 15f, TEXT, false, user = true))
         info.addView(tv((accOf(tx.acc)?.name ?: "") + " · " + df.format(Date(tx.t)), 12f, SUB))
         r.addView(info, lp(0, WRAP, 1f))
         r.addView(tv(sgn(tx.amt), 15f, if (tx.amt == 0.0) SUB else if (tx.amt < 0) DANGER else ACCENT, true))
@@ -1370,8 +1457,8 @@ class MainActivity : Activity() {
             foldAnim = null
             return
         }
-        val df = SimpleDateFormat("d MMM, HH:mm", Locale.US)
-        val mf = SimpleDateFormat("MMMM yyyy", Locale.US)
+        val df = SimpleDateFormat("d MMM, HH:mm", loc())
+        val mf = SimpleDateFormat("MMMM yyyy", loc())
         val cal = Calendar.getInstance()
         val curYear = cal.get(Calendar.YEAR)
         val nowKey = curYear * 12 + cal.get(Calendar.MONTH)
@@ -1402,7 +1489,7 @@ class MainActivity : Activity() {
                     root.addView(txRow(x, df), lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) })
                 }
                 if (list.size > lim) {
-                    val more = tv("Show more (${list.size - lim} left)", 13f, SUB, true).apply {
+                    val more = tv(if (lang == "tr") "Daha fazla göster (${list.size - lim} kaldı)" else "Show more (${list.size - lim} left)", 13f, SUB, true).apply {
                         gravity = Gravity.CENTER
                         setPadding(dp(12), dp(12), dp(12), dp(12))
                         background = tap(KEY)
@@ -1483,7 +1570,7 @@ class MainActivity : Activity() {
             }
         }
         val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        l.addView(tv(a.name, 16f, lk.tc, true))
+        l.addView(tv(a.name, 16f, lk.tc, true, user = true))
         if (sel) l.addView(tv("Active", 12f, accent))
         r.addView(l, lp(0, WRAP, 1f))
         val bc = if (bal < 0) (if (lk.light) 0xFFC62828.toInt() else DANGER) else lk.tc
@@ -1625,6 +1712,41 @@ class MainActivity : Activity() {
         }
         setting("Save & close app on template tap", autoClose, 16) { autoClose = it; saveCfg() }
         setting("Vibration", vibrate, 8) { vibrate = it; saveCfg(); if (it) buzz() }
+        // language: Türkçe / English
+        val langRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(12), dp(10))
+            background = box(CARD, BORDER)
+        }
+        langRow.addView(tv("Language", 14f, TEXT), lp(0, WRAP, 1f))
+        val langSeg = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = box(BG)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+        }
+        fun langOpt(code: String, label: String) {
+            val on = lang == code
+            val o = tv(label, 13f, if (on) BG else SUB, true, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = if (on) box(ACCENT) else null
+                setOnClickListener {
+                    if (lang != code) {
+                        lang = code
+                        saveCfg()
+                        shownKey = -1      // rebuild the bottom bar too
+                        render()
+                    }
+                }
+            }
+            pressFx(o, 0.96f)
+            langSeg.addView(o)
+        }
+        langOpt("tr", "Türkçe")
+        langOpt("en", "English")
+        langRow.addView(langSeg)
+        root.addView(langRow, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
 
         // Import & Export is always the last item
         root.addView(
@@ -1659,7 +1781,8 @@ class MainActivity : Activity() {
 
     private val IMG_NAME = Regex("t_[A-Za-z0-9-]{1,64}\\.jpg")
 
-    private fun cnt(n: Int, w: String) = if (n == 1) "1 $w" else "$n ${w}s"
+    private fun cnt(n: Int, w: String) =
+        if (lang == "tr") "$n ${s(w)}" else if (n == 1) "1 $w" else "$n ${w}s"
 
     private fun launchPicker(i: Intent, code: Int) {
         picking = true
@@ -1792,18 +1915,19 @@ class MainActivity : Activity() {
             snack("This is not a valid Wallet Fast backup")
             return
         }
-        val whenTxt = if (b.exported > 0L) {
-            " from " + SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(b.exported))
+        val d = if (b.exported > 0L) SimpleDateFormat("d MMM yyyy", loc()).format(Date(b.exported)) else ""
+        val msg = if (lang == "tr") {
+            (if (d.isNotEmpty()) "$d tarihli dosyada" else "Dosyada") +
+                    " ${cnt(b.cfg.accs.size, "account")}, ${cnt(b.cfg.tpls.size, "template")} " +
+                    "ve ${cnt(b.txs.size, "transaction")} var. Şu an telefondaki her şey değiştirilecek. " +
+                    "Bu işlem geri alınamaz."
         } else {
-            ""
-        }
-        openConfirm(
-            "Import this backup?",
-            "The file$whenTxt has ${cnt(b.cfg.accs.size, "account")}, ${cnt(b.cfg.tpls.size, "template")} " +
+            "The file" + (if (d.isNotEmpty()) " from $d" else "") +
+                    " has ${cnt(b.cfg.accs.size, "account")}, ${cnt(b.cfg.tpls.size, "template")} " +
                     "and ${cnt(b.txs.size, "transaction")}. Everything that is on this phone now will be " +
-                    "replaced. This can't be undone.",
-            "Import"
-        ) { applyBackup(b) }
+                    "replaced. This can't be undone."
+        }
+        openConfirm("Import this backup?", msg, "Import") { applyBackup(b) }
     }
 
     private fun applyBackup(b: Backup) {
@@ -2004,11 +2128,11 @@ class MainActivity : Activity() {
     // Template 1, Template 2 ... (skip = index of the template being edited, -1 for new)
     private fun untitled(skip: Int): String {
         val used = tpls.filterIndexed { i, _ -> i != skip }.map { it.label }.toSet()
+        val p = s("Template")
         var n = 1
-        while ("Template $n" in used) n++
-        return "Template $n"
+        while ("$p $n" in used) n++
+        return "$p $n"
     }
-
     private fun openTplEditor(idx: Int) {
         val isNew = idx < 0
         val st = if (isNew) Style(0, null) else Style(tpls[idx].color, tpls[idx].img)
@@ -2150,7 +2274,7 @@ class MainActivity : Activity() {
         // name
         sh.addView(tv("Name", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
         val nameEt = EditText(this).apply {
-            hint = nameHint
+            hint = s(nameHint)
             setText(name)
             setSelection(text.length)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
@@ -2209,7 +2333,7 @@ class MainActivity : Activity() {
             for (a in accs) opts.add(Pair(a.id, a.name))
             for (o in opts) {
                 val id = o.first
-                val chip = tv(o.second, 13f, SUB, true).apply {
+                val chip = tv(o.second, 13f, SUB, true, user = true).apply {
                     setPadding(dp(14), dp(9), dp(14), dp(9))
                     setOnClickListener { pick = id; styleChips() }
                 }
@@ -2245,7 +2369,7 @@ class MainActivity : Activity() {
                     }
                 }
                 val has = style.img != null
-                imgBtn.text = if (has) "Image ✓" else "Choose image"
+                imgBtn.text = s(if (has) "Image ✓" else "Choose image")
                 imgBtn.setTextColor(if (has) ACCENT else SUB)
                 imgBtn.background = box(if (has) BG else KEY, if (has) ACCENT else 0)
             }
@@ -2358,7 +2482,7 @@ class MainActivity : Activity() {
                     else -> null
                 }
                 if (msg != null) {
-                    err.text = msg
+                    err.text = s(msg)
                     err.visibility = View.VISIBLE
                     return@setOnClickListener
                 }
