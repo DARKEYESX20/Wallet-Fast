@@ -1507,6 +1507,12 @@ class MainActivity : Activity() {
                 }
             }
             pressFx(r, 0.98f)
+            r.isHapticFeedbackEnabled = false
+            r.setOnLongClickListener {
+                buzz()
+                openAccEditor(a)
+                true
+            }
             root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
 
