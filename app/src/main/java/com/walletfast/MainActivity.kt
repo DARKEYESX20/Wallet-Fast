@@ -26,6 +26,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.text.InputFilter
 import android.text.InputType
+import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -67,6 +68,15 @@ class MainActivity : Activity() {
     private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double)
     private class Style(var color: Int, var img: String?)
     private class Look(val bmp: Bitmap?, val styled: Boolean, val light: Boolean, val tc: Int, val sub: Int)
+
+    // everything the config JSON holds (also used by backups)
+    private class Cfg(
+        val accs: List<Acc>, val tpls: List<Tpl>, val active: Int,
+        val nid: Int, val autoClose: Boolean, val vibrate: Boolean
+    )
+
+    // a parsed backup file, checked and ready to be applied
+    private class Backup(val cfg: Cfg, val txs: List<Tx>, val images: Map<String, ByteArray>, val exported: Long)
 
     // center-crop bitmap drawable (no intrinsic size, so it never changes the card's height)
     private class CropDrawable(private val b: Bitmap) : Drawable() {
@@ -119,6 +129,7 @@ class MainActivity : Activity() {
     )
     private val WHITE = 0xFFFFFFFF.toInt()
     private val WHITE_SUB = 0xCCFFFFFF.toInt()
+    private val MENU_ICON = 0xFF8A958D.toInt()   // settings icon, drawn at 80% opacity
 
     // animation: very short and subtle, GPU-friendly property animations only
     private val DUR = 120L
@@ -133,6 +144,8 @@ class MainActivity : Activity() {
     private var nid = 2            // next free account id
     private var active = 0         // id of the active account
     private var tab = 0            // 0 = Templates (home), 1 = Accounts
+    private var screen = 0         // 0 = main (tabs), 1 = Settings, 2 = Import & Export (full-screen pages)
+    private var picking = false    // a file picker is open: don't reset the screen when we come back
     private var edit = false
     private var autoClose = false
     private var vibrate = true     // Vibration setting (Edit mode)
@@ -172,18 +185,31 @@ class MainActivity : Activity() {
 
     override fun onRestart() {
         super.onRestart()
+        // coming back from our own file picker: stay where we are
+        if (picking) {
+            picking = false
+            return
+        }
         // App always comes back on the Templates tab
-        if (sheet == null && (tab != 0 || edit)) {
+        if (sheet == null && (tab != 0 || edit || screen != 0)) {
             tab = 0
             edit = false
+            screen = 0
             render()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        picking = false   // onRestart (if any) has already run; the picker is closed now
     }
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
             sheet != null -> closeSheet()
+            screen == 2 -> { screen = 1; render() }
+            screen == 1 -> { screen = 0; render() }
             tab != 0 -> { tab = 0; edit = false; navAnim = true; render() }
             else -> super.onBackPressed()
         }
@@ -196,7 +222,7 @@ class MainActivity : Activity() {
                 swX = ev.rawX
                 swY = ev.rawY
                 swT = ev.eventTime
-                swArmed = sheet == null
+                swArmed = sheet == null && screen == 0
             }
             MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> swArmed = false
         }
@@ -208,7 +234,7 @@ class MainActivity : Activity() {
             val fast = ev.eventTime - swT < 600
             val far = Math.abs(dx) > dp(80).toFloat()
             val horizontal = Math.abs(dx) > Math.abs(dy) * 2f
-            if (sheet == null && fast && far && horizontal) {
+            if (sheet == null && screen == 0 && fast && far && horizontal) {
                 val to = if (dx < 0) 1 else 0   // swipe left -> Accounts, swipe right -> Templates
                 if (to != tab) {
                     tab = to
@@ -251,51 +277,71 @@ class MainActivity : Activity() {
         val s = getSharedPreferences("cfg", MODE_PRIVATE).getString("cfg", null)
         if (s == null) { defaults(); return }
         try {
-            val o = JSONObject(s)
-            accs.clear(); tpls.clear()
-            val a = o.getJSONArray("accs")
-            for (i in 0 until a.length()) {
-                val x = a.getJSONObject(i)
-                // old configs have no "id": the list position was the id back then
-                accs.add(
-                    Acc(
-                        x.optInt("id", i),
-                        x.getString("n"),
-                        x.getDouble("o"),
-                        x.optInt("col", 0),
-                        x.optString("img", "").ifEmpty { null }
-                    )
-                )
-            }
-            if (accs.isEmpty()) { defaults(); return }
-            var top = 0
-            for (ac in accs) if (ac.id > top) top = ac.id
-            nid = Math.max(o.optInt("nid", 0), top + 1)
-            val t = o.getJSONArray("tpls")
-            for (i in 0 until t.length()) {
-                val x = t.getJSONObject(i)
-                val c = x.optInt("c", -1)
-                tpls.add(
-                    Tpl(
-                        x.getString("l"),
-                        x.getDouble("a"),
-                        if (accOf(c) != null) c else -1,
-                        x.optInt("col", 0),
-                        x.optString("img", "").ifEmpty { null }
-                    )
-                )
-            }
-            active = o.optInt("active", 0)
-            autoClose = o.optBoolean("ac", false)
-            vibrate = o.optBoolean("vib", true)
+            applyCfg(parseCfg(JSONObject(s)))
         } catch (e: Exception) {
             defaults()
-            return
         }
-        if (accOf(active) == null) active = accs[0].id
     }
 
-    private fun saveCfg() {
+    // reads the config JSON (also the "cfg" part of a backup); throws if it is not usable
+    private fun parseCfg(o: JSONObject): Cfg {
+        val list = ArrayList<Acc>()
+        val a = o.getJSONArray("accs")
+        for (i in 0 until a.length()) {
+            val x = a.getJSONObject(i)
+            // old configs have no "id": the list position was the id back then
+            list.add(
+                Acc(
+                    x.optInt("id", i),
+                    x.getString("n"),
+                    x.getDouble("o"),
+                    x.optInt("col", 0),
+                    x.optString("img", "").ifEmpty { null }
+                )
+            )
+        }
+        if (list.isEmpty()) throw IllegalArgumentException("no accounts")
+        val ids = HashSet<Int>()
+        var top = 0
+        for (ac in list) {
+            if (!ids.add(ac.id)) throw IllegalArgumentException("duplicate account id")
+            if (ac.id > top) top = ac.id
+        }
+        val tl = ArrayList<Tpl>()
+        val t = o.getJSONArray("tpls")
+        for (i in 0 until t.length()) {
+            val x = t.getJSONObject(i)
+            val c = x.optInt("c", -1)
+            tl.add(
+                Tpl(
+                    x.getString("l"),
+                    x.getDouble("a"),
+                    if (c in ids) c else -1,
+                    x.optInt("col", 0),
+                    x.optString("img", "").ifEmpty { null }
+                )
+            )
+        }
+        var act = o.optInt("active", 0)
+        if (act !in ids) act = list[0].id
+        return Cfg(
+            list, tl, act,
+            Math.max(o.optInt("nid", 0), top + 1),
+            o.optBoolean("ac", false),
+            o.optBoolean("vib", true)
+        )
+    }
+
+    private fun applyCfg(c: Cfg) {
+        accs.clear(); accs.addAll(c.accs)
+        tpls.clear(); tpls.addAll(c.tpls)
+        active = c.active
+        nid = c.nid
+        autoClose = c.autoClose
+        vibrate = c.vibrate
+    }
+
+    private fun cfgJson(): JSONObject {
         val a = JSONArray()
         accs.forEach {
             a.put(
@@ -310,9 +356,12 @@ class MainActivity : Activity() {
                     .put("col", it.color).put("img", it.img ?: "")
             )
         }
-        val o = JSONObject().put("accs", a).put("tpls", t).put("active", active)
+        return JSONObject().put("accs", a).put("tpls", t).put("active", active)
             .put("nid", nid).put("ac", autoClose).put("vib", vibrate)
-        getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", o.toString()).apply()
+    }
+
+    private fun saveCfg() {
+        getSharedPreferences("cfg", MODE_PRIVATE).edit().putString("cfg", cfgJson().toString()).apply()
     }
 
     // One-time rescue: an earlier build of this version wrote to "telefon.jsonl" by mistake.
@@ -517,12 +566,17 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 77) return
-        val cb = imgCb
-        imgCb = null
         val uri = data?.data
-        if (resultCode != RESULT_OK || uri == null || cb == null) return
-        cb(importImage(uri))
+        when (requestCode) {
+            77 -> {                                   // photo for a template / account
+                val cb = imgCb
+                imgCb = null
+                if (resultCode != RESULT_OK || uri == null || cb == null) return
+                cb(importImage(uri))
+            }
+            78 -> if (resultCode == RESULT_OK && uri != null) writeBackup(uri)   // export
+            79 -> if (resultCode == RESULT_OK && uri != null) readBackup(uri)    // import
+        }
     }
 
     // downscale (~700px), fix EXIF rotation, save as JPEG inside the app (data stays on the phone)
@@ -737,7 +791,7 @@ class MainActivity : Activity() {
 
     private var sv: ScrollView? = null
     private var navHost: FrameLayout? = null
-    private var shownTab = -1
+    private var shownKey = -1
 
     // the frame, scroll area and nav slot are built once and stay on screen
     private fun buildFrame() {
@@ -759,12 +813,23 @@ class MainActivity : Activity() {
         if (sheet != null) closeSheet()
         val s = sv ?: return
         s.removeAllViews()
-        s.addView(if (tab == 0) buildTemplates() else buildAccounts())
-        if (shownTab != tab) {          // tab changed: start at the top, refresh the nav
+        s.addView(
+            when (screen) {
+                1 -> buildSettings()
+                2 -> buildBackup()
+                else -> if (tab == 0) buildTemplates() else buildAccounts()
+            }
+        )
+        // the bottom nav belongs to the main screen only, Settings pages are full screen
+        navHost?.visibility = if (screen == 0) View.VISIBLE else View.GONE
+        val key = if (screen == 0) tab else 10 + screen
+        if (shownKey != key) {          // screen changed: start at the top, refresh the nav
             s.scrollTo(0, 0)
-            navHost?.removeAllViews()
-            navHost?.addView(buildNav())
-            shownTab = tab
+            if (screen == 0) {
+                navHost?.removeAllViews()
+                navHost?.addView(buildNav())
+            }
+            shownKey = key
         }
     }
 
@@ -844,10 +909,23 @@ class MainActivity : Activity() {
         col.addView(tv("Total Balance", 15f, SUB))
         col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, true))
         top.addView(col, lp(0, WRAP, 1f))
-        top.addView(tv(if (edit) "Done" else "Edit", 15f, ACCENT, true).apply {
-            setPadding(dp(12), dp(10), dp(4), dp(10))
-            setOnClickListener { edit = !edit; render() }
-        })
+        if (edit) {
+            top.addView(tv("Done", 15f, ACCENT, true).apply {
+                setPadding(dp(12), dp(10), dp(4), dp(10))
+                setOnClickListener { edit = false; render() }
+            })
+        } else {
+            // settings: soft dark-gray chevron at 80% opacity, opens the full-screen Settings page
+            val btn = FrameLayout(this).apply { setOnClickListener { screen = 1; render() } }
+            val ic = ImageView(this).apply {
+                setImageResource(R.drawable.ic_chevron_down)
+                setColorFilter(MENU_ICON)
+                alpha = 0.8f
+            }
+            btn.addView(ic, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
+            pressFx(btn, 0.88f)
+            top.addView(btn, lp(dp(48), dp(48)).apply { setMargins(0, 0, -dp(8), 0) })
+        }
         root.addView(top)
         if (edit) root.addView(tv(hint, 12f, SUB).apply { setPadding(dp(2), dp(6), 0, 0) })
     }
@@ -1125,23 +1203,6 @@ class MainActivity : Activity() {
         }
         newTxId = null
 
-        // settings (edit mode)
-        if (edit) {
-            fun setting(label: String, on: Boolean, top: Int, change: (Boolean) -> Unit) {
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(14), dp(14), dp(14), dp(14))
-                    background = box(CARD, BORDER)
-                }
-                row.addView(tv(label, 14f, TEXT), lp(0, WRAP, 1f))
-                row.addView(toggle(on, change), lp(dp(50), dp(28)))
-                root.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(top), 0, 0) })
-            }
-            setting("Save & close app on template tap", autoClose, 20) { autoClose = it; saveCfg() }
-            setting("Vibration", vibrate, 8) { vibrate = it; saveCfg(); if (it) buzz() }
-        }
-
         return root
     }
 
@@ -1214,6 +1275,295 @@ class MainActivity : Activity() {
         add.addView(tv("+ New Account", 16f, SUB, true).apply { gravity = Gravity.CENTER })
         root.addView(add, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         return root
+    }
+
+    // ---------- Settings pages (full screen) ----------
+
+    // the chevron icon; rotation turns it into a back arrow (90) or a forward arrow (-90)
+    private fun chev(color: Int, rot: Float) = ImageView(this).apply {
+        setImageResource(R.drawable.ic_chevron_down)
+        setColorFilter(color)
+        rotation = rot
+    }
+
+    // back arrow + title at the top of a full-screen page
+    private fun pageTop(root: LinearLayout, title: String, back: () -> Unit) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val b = FrameLayout(this).apply { setOnClickListener { back() } }
+        b.addView(chev(TEXT, 90f), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+        pressFx(b, 0.88f)
+        row.addView(b, lp(dp(44), dp(44)).apply { setMargins(-dp(8), 0, dp(4), 0) })
+        row.addView(tv(title, 22f, TEXT, true))
+        root.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(10)) })
+    }
+
+    // tappable menu row with a forward arrow
+    private fun menuRow(title: String, sub: String?, onClick: () -> Unit): View {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(64)
+            setPadding(dp(16), dp(12), dp(14), dp(12))
+            background = tap(CARD, BORDER)
+            setOnClickListener { onClick() }
+        }
+        val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        l.addView(tv(title, 15f, TEXT, true))
+        if (sub != null) l.addView(tv(sub, 12f, SUB).apply { setPadding(0, dp(2), 0, 0) })
+        r.addView(l, lp(0, WRAP, 1f))
+        r.addView(chev(SUB, -90f), lp(dp(20), dp(20)))
+        pressFx(r, 0.98f)
+        return r
+    }
+
+    private fun buildSettings(): View {
+        val root = page()
+        pageTop(root, "Settings") { screen = 0; render() }
+
+        // edit mode (reorder / rename / delete) is entered from here
+        root.addView(
+            menuRow("Edit templates & accounts", "Reorder, rename, change look or delete") {
+                edit = true
+                screen = 0
+                render()
+            },
+            lp(MATCH, WRAP)
+        )
+
+        fun setting(label: String, on: Boolean, top: Int, change: (Boolean) -> Unit) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                background = box(CARD, BORDER)
+            }
+            row.addView(tv(label, 14f, TEXT), lp(0, WRAP, 1f))
+            row.addView(toggle(on, change), lp(dp(50), dp(28)))
+            root.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(top), 0, 0) })
+        }
+        setting("Save & close app on template tap", autoClose, 16) { autoClose = it; saveCfg() }
+        setting("Vibration", vibrate, 8) { vibrate = it; saveCfg(); if (it) buzz() }
+
+        // Import & Export is always the last item
+        root.addView(
+            menuRow("Import & Export", "Back up or restore your data") { screen = 2; render() },
+            lp(MATCH, WRAP).apply { setMargins(0, dp(28), 0, 0) }
+        )
+        return root
+    }
+
+    private fun buildBackup(): View {
+        val root = page()
+        pageTop(root, "Import & Export") { screen = 1; render() }
+        root.addView(
+            tv(
+                "A backup keeps your accounts, templates, transactions and photos in one file. " +
+                        "Importing replaces everything that is on this phone right now.",
+                13f, SUB
+            ).apply { setPadding(dp(2), 0, dp(2), dp(14)) },
+            lp(MATCH, WRAP)
+        )
+        root.addView(menuRow("Export data", "Save a backup file") { startExport() }, lp(MATCH, WRAP))
+        root.addView(
+            menuRow("Import data", "Restore from a backup file") { startImport() },
+            lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) }
+        )
+        return root
+    }
+
+    // ---------- backup: export / import ----------
+    // File format: one JSON object {app, version, exported, cfg, tx[], images{name: base64}}.
+    // Own format on purpose: it keeps templates, account looks and photos, which other apps can't hold.
+
+    private val IMG_NAME = Regex("t_[A-Za-z0-9-]{1,64}\\.jpg")
+
+    private fun cnt(n: Int, w: String) = if (n == 1) "1 $w" else "$n ${w}s"
+
+    private fun launchPicker(i: Intent, code: Int) {
+        picking = true
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, code)
+        } catch (e: Exception) {
+            picking = false
+            snack("No file manager found")
+        }
+    }
+
+    private fun startExport() {
+        val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "wallet-fast-backup-$date.json")
+        }
+        launchPicker(i, 78)
+    }
+
+    private fun startImport() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        launchPicker(i, 79)
+    }
+
+    private fun buildBackupJson(): String {
+        val o = JSONObject()
+            .put("app", "walletfast")
+            .put("version", 1)
+            .put("exported", System.currentTimeMillis())
+            .put("cfg", cfgJson())
+        // only live transactions: undone ones and their undo lines are not needed
+        val ta = JSONArray()
+        for (x in txs) {
+            ta.put(JSONObject().put("id", x.id).put("t", x.t).put("acc", x.acc).put("l", x.label).put("a", x.amt))
+        }
+        o.put("tx", ta)
+        val used = HashSet<String>()
+        accs.forEach { a -> a.img?.let { used.add(it) } }
+        tpls.forEach { t -> t.img?.let { used.add(it) } }
+        val io = JSONObject()
+        for (n in used) {
+            val f = File(imgDir(), n)
+            if (f.exists()) io.put(n, Base64.encodeToString(f.readBytes(), Base64.NO_WRAP))
+        }
+        o.put("images", io)
+        return o.toString()
+    }
+
+    private fun writeBackup(uri: Uri) {
+        try {
+            val bytes = buildBackupJson().toByteArray(Charsets.UTF_8)
+            contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                ?: throw java.io.IOException("no output stream")
+            snack("Backup saved")
+        } catch (e: Exception) {
+            snack("Couldn't save backup")
+        }
+    }
+
+    // checks the whole file first; throws if anything is wrong, nothing is changed on the phone
+    private fun parseBackup(text: String): Backup {
+        val o = JSONObject(text)
+        if (o.optString("app") != "walletfast") throw IllegalArgumentException("not a Wallet Fast backup")
+        if (o.optInt("version", 0) != 1) throw IllegalArgumentException("unknown version")
+        val cfg = parseCfg(o.getJSONObject("cfg"))
+
+        val all = HashMap<String, ByteArray>()
+        val io = o.optJSONObject("images")
+        if (io != null) {
+            val keys = io.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                if (!IMG_NAME.matches(k)) continue          // only our own photo names are accepted
+                all[k] = Base64.decode(io.getString(k), Base64.DEFAULT)
+            }
+        }
+        // a look that points to a photo missing from the file falls back to the default look
+        val imgs = HashMap<String, ByteArray>()
+        for (a in cfg.accs) {
+            val n = a.img
+            if (n != null) {
+                val bytes = all[n]
+                if (bytes == null) a.img = null else imgs[n] = bytes
+            }
+        }
+        for (t in cfg.tpls) {
+            val n = t.img
+            if (n != null) {
+                val bytes = all[n]
+                if (bytes == null) t.img = null else imgs[n] = bytes
+            }
+        }
+
+        val ids = HashSet<Int>()
+        for (a in cfg.accs) ids.add(a.id)
+        val list = ArrayList<Tx>()
+        val seen = HashSet<String>()
+        val ta = o.optJSONArray("tx") ?: JSONArray()
+        for (i in 0 until ta.length()) {
+            val x = ta.getJSONObject(i)
+            val id = x.getString("id")
+            val acc = x.getInt("acc")
+            if (acc !in ids || !seen.add(id)) continue
+            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a")))
+        }
+        return Backup(cfg, list, imgs, o.optLong("exported", 0L))
+    }
+
+    private fun readBackup(uri: Uri) {
+        val b = try {
+            val size = try {
+                contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+            } catch (e: Exception) {
+                -1L
+            }
+            if (size > 64L * 1024L * 1024L) {
+                snack("File is too big")
+                return
+            }
+            val text = contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                ?: throw java.io.IOException("no input stream")
+            parseBackup(text)
+        } catch (e: Exception) {
+            snack("This is not a valid Wallet Fast backup")
+            return
+        }
+        val whenTxt = if (b.exported > 0L) {
+            " from " + SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(b.exported))
+        } else {
+            ""
+        }
+        openConfirm(
+            "Import this backup?",
+            "The file$whenTxt has ${cnt(b.cfg.accs.size, "account")}, ${cnt(b.cfg.tpls.size, "template")} " +
+                    "and ${cnt(b.txs.size, "transaction")}. Everything that is on this phone now will be " +
+                    "replaced. This can't be undone.",
+            "Import"
+        ) { applyBackup(b) }
+    }
+
+    private fun applyBackup(b: Backup) {
+        try {
+            // new transaction file goes to a temp file first, the old one stays until everything worked
+            val tmp = File(filesDir, "transactions.jsonl.tmp")
+            tmp.bufferedWriter().use { w ->
+                for (x in b.txs) {
+                    w.write(
+                        JSONObject().put("k", "tx").put("id", x.id).put("t", x.t).put("acc", x.acc)
+                            .put("l", x.label).put("a", x.amt).toString()
+                    )
+                    w.newLine()
+                }
+            }
+            for ((name, bytes) in b.images) File(imgDir(), name).writeBytes(bytes)
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            snack("Couldn't import")
+            return
+        }
+        applyCfg(b.cfg)
+        saveCfg()
+        loadTx()
+        // photos that nothing uses anymore
+        val keep = HashSet<String>()
+        accs.forEach { a -> a.img?.let { keep.add(it) } }
+        tpls.forEach { t -> t.img?.let { keep.add(it) } }
+        imgDir().listFiles()?.forEach { f -> if (f.name !in keep) f.delete() }
+        bmpCache.clear()
+        lastTapIdx = -1
+        edit = false
+        tab = 0
+        screen = 0
+        render()
+        snack("Data imported")
     }
 
     // ---------- account picker ----------
