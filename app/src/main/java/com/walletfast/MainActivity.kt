@@ -1017,7 +1017,7 @@ class MainActivity : Activity() {
     // ---------- drag to reorder (edit mode) ----------
     // Long-press a template card, drag it over another card and release to move it there.
     @SuppressLint("ClickableViewAccessibility")
-    private fun dragSort(card: View, from: Int, cards: List<View>) {
+    private fun dragSort(card: View, from: Int, cards: List<View>, move: (Int, Int) -> Unit) {
         val s = sv ?: return
         var dragging = false
         var curX = 0f
@@ -1098,10 +1098,7 @@ class MainActivity : Activity() {
                     .scaleX(1f).scaleY(1f)
                     .setDuration(DUR).setInterpolator(ease)
                     .withEndAction {
-                        val item = tpls.removeAt(from)
-                        tpls.add(t, item)
-                        lastTapIdx = -1
-                        saveCfg()
+                        move(from, t)
                         render()
                     }.start()
             } else {
@@ -1223,7 +1220,12 @@ class MainActivity : Activity() {
             }
             cards.add(c)
             if (edit) {
-                dragSort(c, idx, cards)
+                dragSort(c, idx, cards) { f, t ->
+                    val item = tpls.removeAt(f)
+                    tpls.add(t, item)
+                    lastTapIdx = -1
+                    saveCfg()
+                }
             } else {
                 pressFx(c, 0.96f)
                 c.isHapticFeedbackEnabled = false   // sistemin titreşimi yerine kendi Vibration ayarımız çalışsın
@@ -1492,11 +1494,16 @@ class MainActivity : Activity() {
     private fun buildAccounts(): View {
         val bals = balMap()
         val root = page()
-        header(root, totalOf(bals), "Tap an account to rename it, set its balance, change its look or delete it")
+        header(
+            root, totalOf(bals),
+            "Tap an account to rename it, set its balance, change its look or delete it · hold and drag to reorder"
+        )
 
         root.addView(tv("Accounts", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
-        for (a in accs) {
+        val rows = ArrayList<View>()
+        accs.forEachIndexed { idx, a ->
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
+            rows.add(r)
             r.setOnClickListener {
                 if (edit) {
                     openAccEditor(a)
@@ -1506,12 +1513,22 @@ class MainActivity : Activity() {
                     render()
                 }
             }
-            pressFx(r, 0.98f)
-            r.isHapticFeedbackEnabled = false
-            r.setOnLongClickListener {
-                buzz()
-                openAccEditor(a)
-                true
+            if (edit) {
+                // edit mode: hold and drag to reorder
+                dragSort(r, idx, rows) { f, t ->
+                    val item = accs.removeAt(f)
+                    accs.add(t, item)
+                    saveCfg()
+                }
+            } else {
+                // normal mode: hold to open the account settings
+                pressFx(r, 0.98f)
+                r.isHapticFeedbackEnabled = false
+                r.setOnLongClickListener {
+                    buzz()
+                    openAccEditor(a)
+                    true
+                }
             }
             root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
