@@ -1222,7 +1222,17 @@ class MainActivity : Activity() {
                 }
             }
             cards.add(c)
-            if (edit) dragSort(c, idx, cards) else pressFx(c, 0.96f)
+            if (edit) {
+                dragSort(c, idx, cards)
+            } else {
+                pressFx(c, 0.96f)
+                c.isHapticFeedbackEnabled = false   // sistemin titreşimi yerine kendi Vibration ayarımız çalışsın
+                c.setOnLongClickListener {
+                    buzz()
+                    openTplEditor(idx)
+                    true
+                }
+            }
             c.addView(tv(t.label, 23f, tc, true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
                 light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
