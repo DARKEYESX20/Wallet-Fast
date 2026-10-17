@@ -1264,6 +1264,7 @@ class MainActivity : Activity() {
     // folder key -> opened (true) or closed (false) by the user; lives until the app is closed
     private val fold = HashMap<String, Boolean>()
     private val shown = HashMap<Int, Int>()   // month key -> how many rows are visible
+    private var foldAnim: String? = null   // folder whose arrow should turn on the next render
     private val PAGE = 15
 
     private fun totOf(list: List<Tx>): Tot {
@@ -1287,7 +1288,7 @@ class MainActivity : Activity() {
     }
 
     // a month or year row: title + count on the left, Expenses / Incomes on the right, arrow at the end
-    private fun folderRow(title: String, sub: String, tot: Tot, open: Boolean, onClick: () -> Unit): View {
+    private fun folderRow(fk: String, title: String, sub: String, tot: Tot, open: Boolean, onClick: () -> Unit): View {
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1306,7 +1307,14 @@ class MainActivity : Activity() {
         s.addView(sumLine("Expenses", tot.exp, DANGER))
         s.addView(sumLine("Incomes", tot.inc, ACCENT))
         r.addView(s, lp(WRAP, WRAP))
-        r.addView(chev(SUB, if (open) 180f else 0f), lp(dp(20), dp(20)).apply { setMargins(dp(8), 0, 0, 0) })
+
+        // the arrow of the folder that was just tapped starts from its old direction and turns
+        val to = if (open) 180f else 0f
+        val from = if (foldAnim == fk) (if (open) 0f else 180f) else to
+        val ic = chev(SUB, from)
+        if (from != to) ic.post { ic.animate().rotation(to).setDuration(220L).setInterpolator(easeIO).start() }
+        r.addView(ic, lp(dp(20), dp(20)).apply { setMargins(dp(8), 0, 0, 0) })
+
         pressFx(r, 0.98f)
         return r
     }
@@ -1346,6 +1354,7 @@ class MainActivity : Activity() {
         if (txs.isEmpty()) {
             root.addView(tv("No transactions yet", 14f, SUB))
             newTxId = null
+            foldAnim = null
             return
         }
         val df = SimpleDateFormat("d MMM, HH:mm", Locale.US)
@@ -1366,8 +1375,9 @@ class MainActivity : Activity() {
             val fk = "m$key"
             val open = fold[fk] ?: (key == nowKey)   // the current month starts open, the others closed
             root.addView(
-                folderRow(mf.format(Date(list[0].t)), cnt(list.size, "transaction"), totOf(list), open) {
+                folderRow(fk, mf.format(Date(list[0].t)), cnt(list.size, "transaction"), totOf(list), open) {
                     fold[fk] = !open
+                    foldAnim = fk
                     if (open) shown.remove(key)       // closing resets it back to the first 15
                     render()
                 },
@@ -1396,9 +1406,10 @@ class MainActivity : Activity() {
                         setPadding(dp(12), dp(12), dp(12), dp(12))
                         background = tap(KEY)
                         setOnClickListener {
-                            fold[fk] = false
-                            shown.remove(key)            // close the whole month
-                            render()                     // next time it opens with the first 15 again
+                            fold[fk] = false             // close the whole month
+                            foldAnim = fk                // its arrow turns back down
+                            shown.remove(key)
+                            render()
                         }
                     }
                     pressFx(less, 0.97f)
@@ -1419,8 +1430,9 @@ class MainActivity : Activity() {
             val fk = "y$y"
             val open = fold[fk] ?: false
             root.addView(
-                folderRow(y.toString(), cnt(keys.size, "month"), totOf(all), open) {
+                folderRow(fk, y.toString(), cnt(keys.size, "month"), totOf(all), open) {
                     fold[fk] = !open
+                    foldAnim = fk
                     render()
                 },
                 lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, 0) }
@@ -1428,6 +1440,7 @@ class MainActivity : Activity() {
             if (open) for (k in keys) month(k, dp(14))
         }
         newTxId = null
+        foldAnim = null
     }
 
     // ---------- Accounts tab ----------
