@@ -2,6 +2,7 @@ package com.walletfast
 
 import android.annotation.SuppressLint
 import android.animation.ArgbEvaluator
+import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.Intent
@@ -222,6 +223,9 @@ class MainActivity : Activity() {
         "Import this backup?" to "Bu yedek içe aktarılsın mı?",
         "Couldn't save entry" to "Kayıt kaydedilemedi",
         "Couldn't delete account" to "Hesap silinemedi",
+        "Delete month?" to "Ay silinsin mi?",
+        "Couldn't delete month" to "Ay silinemedi",
+        "Hold a month to delete it" to "Silmek için bir aya basılı tut",
         "No gallery app found" to "Galeri uygulaması bulunamadı",
         "Couldn't load image" to "Görsel yüklenemedi",
         "No file manager found" to "Dosya yöneticisi bulunamadı",
@@ -843,6 +847,134 @@ class MainActivity : Activity() {
         } catch (e: Exception) {
         }
     }
+    // ---------- edit mode: wobble + delete cross ----------
+    private val jig = HashMap<View, ObjectAnimator>()
+
+    // iPhone-style wobble: tiny rotation back and forth (GPU property, no redraw)
+    private fun jiggle(v: View, amp: Float) {
+        stopJiggle(v)
+        val sign = if (Math.random() < 0.5) -1f else 1f
+        val a = ObjectAnimator.ofFloat(v, View.ROTATION, -amp * sign, amp * sign).apply {
+            duration = 100L + (Math.random() * 50).toLong()
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = easeIO
+        }
+        jig[v] = a
+        v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(x: View) {}
+            override fun onViewDetachedFromWindow(x: View) {
+                x.removeOnAttachStateChangeListener(this)
+                stopJiggle(x)
+            }
+        })
+        a.start()
+    }
+
+    private fun stopJiggle(v: View) {
+        jig.remove(v)?.cancel()
+    }
+
+    // small red circle with a white cross (top-right corner of a card in edit mode)
+    private fun delBadge(onClick: () -> Unit): View {
+        val host = FrameLayout(this)   // 32dp touch area around a 20dp circle
+        val dot = object : View(this@MainActivity) {
+            private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = WHITE
+                style = Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                strokeCap = Paint.Cap.ROUND
+            }
+
+            override fun onDraw(c: Canvas) {
+                val m = width * 0.3f
+                c.drawLine(m, m, width - m, height - m, p)
+                c.drawLine(width - m, m, m, height - m, p)
+            }
+        }
+        dot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(DANGER)
+        }
+        host.addView(dot, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
+        host.setOnClickListener { onClick() }
+        pressFx(host, 0.85f)
+        return host
+    }
+
+    private fun deleteTpl(t: Tpl) {
+        val i = tpls.indexOf(t)
+        if (i < 0) return
+        t.img?.let { deleteImg(it) }
+        tpls.removeAt(i)
+        lastTapIdx = -1
+        saveCfg()
+        render()
+    }
+
+    // ---------- month delete (edit mode, Recent Activity) ----------
+
+    // rewrites transactions.jsonl without these transactions and the undo lines that point at them
+    private fun purgeTx(ids: Set<String>): Boolean {
+        if (!file.exists()) return true
+        return try {
+            val tmp = File(filesDir, "transactions.jsonl.tmp")
+            tmp.bufferedWriter().use { w ->
+                file.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    var keep = true
+                    try {
+                        val o = JSONObject(line)
+                        when (o.getString("k")) {
+                            "tx" -> if (o.getString("id") in ids) keep = false
+                            "undo" -> if (o.getString("ref") in ids) keep = false
+                            else -> {}
+                        }
+                    } catch (e: Exception) {
+                    }
+                    if (keep) {
+                        w.write(line)
+                        w.newLine()
+                    }
+                }
+            }
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun requestDeleteMonth(key: Int, title: String, list: List<Tx>) {
+        val what = cnt(list.size, "transaction")
+        val msg = if (lang == "tr")
+            "\u201C$title\u201D içindeki $what kalıcı olarak silinecek. Hesap bakiyeleri değişmeyecek. Bu işlem geri alınamaz."
+        else
+            "The $what in \u201C$title\u201D will be permanently deleted. Account balances won't change. This can't be undone."
+        val copy = list.toList()
+        openConfirm("Delete month?", msg, "Delete") { deleteMonth(key, copy) }
+    }
+    private fun deleteMonth(key: Int, list: List<Tx>) {
+        val ids = HashSet<String>()
+        for (x in list) ids.add(x.id)
+        if (!purgeTx(ids)) {
+            snack("Couldn't delete month")
+            return
+        }
+        // the history is gone but the money did not go anywhere:
+        // the month's total is folded into each account's starting balance, so balances stay the same
+        val delta = HashMap<Int, Double>()
+        for (x in list) delta[x.acc] = (delta[x.acc] ?: 0.0) + x.amt
+        for (a in accs) a.open = r2(a.open + (delta[a.id] ?: 0.0))
+        txs.removeAll { it.id in ids }
+        fold.remove("m$key")
+        shown.remove(key)
+        saveCfg()
+        render()
+    }
 
     private fun quit() {
         finishAndRemoveTask()
@@ -1104,7 +1236,7 @@ class MainActivity : Activity() {
     // ---------- drag to reorder (edit mode) ----------
     // Long-press a template card, drag it over another card and release to move it there.
     @SuppressLint("ClickableViewAccessibility")
-    private fun dragSort(card: View, from: Int, cards: List<View>, move: (Int, Int) -> Unit) {
+    private fun dragSort(card: View, from: Int, cards: List<View>, amp: Float, move: (Int, Int) -> Unit) {
         val s = sv ?: return
         var dragging = false
         var curX = 0f
@@ -1191,7 +1323,7 @@ class MainActivity : Activity() {
             } else {
                 card.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
                     .setDuration(DUR).setInterpolator(ease)
-                    .withEndAction { card.translationZ = 0f }
+                    .withEndAction { card.translationZ = 0f; jiggle(card, amp) }
                     .start()
             }
         }
@@ -1210,7 +1342,8 @@ class MainActivity : Activity() {
                 (g.parent as? ViewGroup)?.clipChildren = false
             }
             card.translationZ = dp(12).toFloat()
-            card.animate().scaleX(1.06f).scaleY(1.06f).setDuration(DUR).setInterpolator(ease).start()
+            stopJiggle(card)   // the lifted card holds still
+            card.animate().rotation(0f).scaleX(1.06f).scaleY(1.06f).setDuration(DUR).setInterpolator(ease).start()
             buzz()
             true
         }
@@ -1305,15 +1438,32 @@ class MainActivity : Activity() {
                     }
                 }
             }
-            cards.add(c)
-            if (edit) {
-                dragSort(c, idx, cards) { f, t ->
-                    val item = tpls.removeAt(f)
-                    tpls.add(t, item)
+            // edit mode: the card sits inside a holder; the holder wobbles, drags and carries the red cross
+            val item: View = if (edit) {
+                c.isClickable = false
+                val h = FrameLayout(this)
+                h.addView(c, FrameLayout.LayoutParams(MATCH, WRAP))
+                h.addView(
+                    delBadge {
+                        stopJiggle(h)
+                        h.animate().alpha(0f).scaleX(0.8f).scaleY(0.8f)
+                            .setDuration(DUR).setInterpolator(easeOut)
+                            .withEndAction { deleteTpl(t) }.start()
+                    },
+                    FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END)
+                )
+                h.setOnClickListener { openTplEditor(idx) }
+                cards.add(h)
+                dragSort(h, idx, cards, 1.4f) { f, to ->
+                    val m = tpls.removeAt(f)
+                    tpls.add(to, m)
                     lastTapIdx = -1
                     saveCfg()
                 }
+                jiggle(h, 1.4f)
+                h
             } else {
+                cards.add(c)
                 pressFx(c, 0.96f)
                 c.isHapticFeedbackEnabled = false   // sistemin titreşimi yerine kendi Vibration ayarımız çalışsın
                 c.setOnLongClickListener {
@@ -1321,6 +1471,7 @@ class MainActivity : Activity() {
                     openTplEditor(idx)
                     true
                 }
+                c
             }
             c.addView(tv(t.label, 23f, tc, true, user = true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
@@ -1338,7 +1489,7 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(6), 0, 0)
             })
-            cell(c)
+            cell(item)
         }
         val add = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1457,6 +1608,7 @@ class MainActivity : Activity() {
             foldAnim = null
             return
         }
+        if (edit) root.addView(tv("Hold a month to delete it", 12f, SUB).apply { setPadding(dp(2), 0, 0, dp(4)) })
         val df = SimpleDateFormat("d MMM, HH:mm", loc())
         val mf = SimpleDateFormat("MMMM yyyy", loc())
         val cal = Calendar.getInstance()
@@ -1474,15 +1626,23 @@ class MainActivity : Activity() {
             val list = months[key] ?: return
             val fk = "m$key"
             val open = fold[fk] ?: (key == nowKey)   // the current month starts open, the others closed
-            root.addView(
-                folderRow(fk, mf.format(Date(list[0].t)), cnt(list.size, "transaction"), totOf(list), open) {
-                    fold[fk] = !open
-                    foldAnim = fk
-                    if (open) shown.remove(key)       // closing resets it back to the first 15
-                    render()
-                },
-                lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) }
-            )
+            val title = mf.format(Date(list[0].t))
+            val row = folderRow(fk, title, cnt(list.size, "transaction"), totOf(list), open) {
+                fold[fk] = !open
+                foldAnim = fk
+                if (open) shown.remove(key)       // closing resets it back to the first 15
+                render()
+            }
+            if (edit) {
+                // edit mode: hold a month to delete everything in it
+                row.isHapticFeedbackEnabled = false
+                row.setOnLongClickListener {
+                    buzz()
+                    requestDeleteMonth(key, title, list)
+                    true
+                }
+            }
+            root.addView(row, lp(MATCH, WRAP).apply { setMargins(indent, dp(4), 0, 0) })
             if (open) {
                 val lim = shown[key] ?: PAGE
                 for (x in list.take(lim)) {
@@ -1591,25 +1751,33 @@ class MainActivity : Activity() {
         val rows = ArrayList<View>()
         accs.forEachIndexed { idx, a ->
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
-            rows.add(r)
             r.setOnClickListener {
-                if (edit) {
-                    openAccEditor(a)
-                } else {
-                    active = a.id
-                    saveCfg()
-                    render()
-                }
+                active = a.id
+                saveCfg()
+                render()
             }
-            if (edit) {
-                // edit mode: hold and drag to reorder
-                dragSort(r, idx, rows) { f, t ->
-                    val item = accs.removeAt(f)
-                    accs.add(t, item)
+            val item: View = if (edit) {
+                r.isClickable = false
+                val h = FrameLayout(this)
+                h.addView(r, FrameLayout.LayoutParams(MATCH, WRAP))
+                // the last remaining account can't be deleted, so it gets no cross
+                if (accs.size > 1) {
+                    h.addView(
+                        delBadge { requestDeleteAccount(a) },
+                        FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END)
+                    )
+                }
+                h.setOnClickListener { openAccEditor(a) }
+                rows.add(h)
+                dragSort(h, idx, rows, 0.6f) { f, to ->
+                    val m = accs.removeAt(f)
+                    accs.add(to, m)
                     saveCfg()
                 }
+                jiggle(h, 0.6f)
+                h
             } else {
-                // normal mode: hold to open the account settings
+                rows.add(r)
                 pressFx(r, 0.98f)
                 r.isHapticFeedbackEnabled = false
                 r.setOnLongClickListener {
@@ -1617,8 +1785,9 @@ class MainActivity : Activity() {
                     openAccEditor(a)
                     true
                 }
+                r
             }
-            root.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
+            root.addView(item, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
 
         val add = LinearLayout(this).apply {
