@@ -213,7 +213,7 @@ class MainActivity : Activity() {
             sheet != null -> closeSheet()
             screen == 2 -> { screen = 1; enter = 3; render() }
             screen == 1 -> { screen = 0; enter = 2; render() }
-            tab != 0 -> { tab = 0; edit = false; navAnim = true; render() }
+            tab != 0 -> { tab = 0; navAnim = true; render() }
             else -> super.onBackPressed()
         }
     }
@@ -241,7 +241,6 @@ class MainActivity : Activity() {
                 val to = if (dx < 0) 1 else 0   // swipe left -> Accounts, swipe right -> Templates
                 if (to != tab) {
                     tab = to
-                    edit = false
                     navAnim = true
                     render()
                 }
@@ -879,7 +878,6 @@ class MainActivity : Activity() {
                 setOnClickListener {
                     if (tab != idx) {
                         tab = idx
-                        edit = false
                         navAnim = true
                         render()
                     }
