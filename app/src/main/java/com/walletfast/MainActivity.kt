@@ -172,6 +172,8 @@ class MainActivity : Activity() {
     private var swY = 0f
     private var swT = 0L
     private var swArmed = false
+    private var pullOpen = false
+    private var pullClose = false
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -226,8 +228,16 @@ class MainActivity : Activity() {
                 swY = ev.rawY
                 swT = ev.eventTime
                 swArmed = sheet == null && screen == 0
+                // "Hitting the wall": Opening/Closing only works when the top wall
+                val s = sv
+                pullOpen = sheet == null && screen == 0 && !edit && s != null && !s.canScrollVertically(-1)
+                pullClose = sheet == null && screen == 1 && s != null && !s.canScrollVertically(1)
             }
-            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> swArmed = false
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> {
+                swArmed = false
+                pullOpen = false
+                pullClose = false
+            }
         }
         val handled = super.dispatchTouchEvent(ev)
         if (ev.actionMasked == MotionEvent.ACTION_UP && swArmed) {
@@ -238,10 +248,33 @@ class MainActivity : Activity() {
             val far = Math.abs(dx) > dp(80).toFloat()
             val horizontal = Math.abs(dx) > Math.abs(dy) * 2f
             if (sheet == null && screen == 0 && fast && far && horizontal) {
-                val to = if (dx < 0) 1 else 0   // swipe left -> Accounts, swipe right -> Templates
+                val to = if (dx < 0) 1 else 0   // Left -> Accounts, Right -> Templates
                 if (to != tab) {
                     tab = to
                     navAnim = true
+                    render()
+                }
+            }
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_UP && (pullOpen || pullClose)) {
+            val open = pullOpen
+            val close = pullClose
+            pullOpen = false
+            pullClose = false
+            val dx = ev.rawX - swX
+            val dy = ev.rawY - swY
+            val fast = ev.eventTime - swT < 700
+            val far = Math.abs(dy) > dp(80).toFloat()
+            val vertical = Math.abs(dy) > Math.abs(dx) * 2f
+            val s = sv
+            if (sheet == null && s != null && fast && far && vertical) {
+                if (open && dy > 0f && screen == 0 && !edit && !s.canScrollVertically(-1)) {
+                    screen = 1          // pull down -> Settings open (with same animation)
+                    enter = 1
+                    render()
+                } else if (close && dy < 0f && screen == 1 && !s.canScrollVertically(1)) {
+                    screen = 0          // push up -> Settings close
+                    enter = 2
                     render()
                 }
             }
