@@ -15,6 +15,8 @@ import android.graphics.Matrix
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.Path
+import android.view.animation.OvershootInterpolator
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -302,7 +304,7 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
-            sheet != null -> closeSheet()
+            sheet != null -> if (sheet === addMenu) closeAddMenu() else closeSheet()
             screen == 2 -> { screen = 1; enter = 3; render() }
             screen == 1 -> { screen = 0; enter = 2; render() }
             tab != 0 -> { tab = 0; navAnim = true; render() }
@@ -995,7 +997,7 @@ class MainActivity : Activity() {
         }
         f.addView(
             t,
-            FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(88) }
+            FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = if (screen == 0 && !edit) dp(112) else dp(88) }
         )
         t.animate().alpha(1f).translationY(0f).setDuration(DUR).setInterpolator(ease).start()
         t.postDelayed({
@@ -1007,7 +1009,7 @@ class MainActivity : Activity() {
 
     private fun page() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(14), dp(12), dp(14), dp(24))
+        setPadding(dp(14), dp(12), dp(14), dp(44))
     }
 
     // custom on/off switch (knob slides, track color fades)
@@ -1061,6 +1063,7 @@ class MainActivity : Activity() {
         sv = s
         navHost = nav
         frame = f
+        buildFab(f, nav)
         setContentView(f)
     }
 
@@ -1077,6 +1080,7 @@ class MainActivity : Activity() {
         s.addView(v)
         // the bottom nav belongs to the main screen only, Settings pages are full screen
         navHost?.visibility = if (screen == 0) View.VISIBLE else View.GONE
+        fab?.visibility = if (screen == 0 && !edit) View.VISIBLE else View.GONE
         val key = if (screen == 0) tab else 10 + screen
         if (shownKey != key) {          // screen changed: start at the top, refresh the nav
             s.scrollTo(0, 0)
@@ -1171,6 +1175,7 @@ class MainActivity : Activity() {
             bar.addView(cell, lp(0, WRAP, 1f))
         }
         item(0, R.drawable.ic_home, "Templates")
+        bar.addView(View(this), lp(dp(76), dp(1)))
         item(1, R.drawable.ic_accounts, "Accounts")
         wrap.addView(bar)
         return wrap
@@ -2136,6 +2141,224 @@ class MainActivity : Activity() {
         screen = 0
         render()
         snack("Data imported")
+    }
+
+    // ---------- + button and quick add menu ----------
+    private val PURPLE = 0xFF9A86FF.toInt()
+    private val FAB_OPEN = 0xFFD3DAD5.toInt()      // the + turns light gray (×) while the menu is open
+    private val pop = OvershootInterpolator(1.1f)
+    private var fab: View? = null
+    private var fabBg: GradientDrawable? = null
+    private var addMenu: FrameLayout? = null
+    private var menuClosing = false
+
+    private class MenuOpt(val label: String, val color: Int, val kind: Int, val dx: Int, val up: Int, val delay: Long)
+
+    // the round + button: sits on the top edge of the bottom bar, in the gap between the two tabs
+    private fun buildFab(f: FrameLayout, nav: View) {
+        val bg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(ACCENT)
+            setStroke(dp(4), BG)   // dark ring: the button looks cut out of the bar
+        }
+        val b = object : View(this@MainActivity) {
+            private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = BG
+                style = Paint.Style.STROKE
+                strokeWidth = resources.displayMetrics.density * 2.8f
+                strokeCap = Paint.Cap.ROUND
+            }
+
+            override fun onDraw(c: Canvas) {
+                val m = width * 0.34f
+                val mid = width / 2f
+                c.drawLine(m, mid, width - m, mid, p)
+                c.drawLine(mid, m, mid, height - m, p)
+            }
+        }
+        b.background = bg
+        b.setOnClickListener { if (addMenu == null) openAddMenu() else closeAddMenu() }
+        pressFx(b, 0.92f)
+        val lpf = FrameLayout.LayoutParams(dp(64), dp(64), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        lpf.bottomMargin = dp(32)
+        f.addView(b, lpf)
+        fab = b
+        fabBg = bg
+        // keep the middle of the button exactly on the top edge of the bar, whatever the bar's height is
+        nav.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ ->
+            val h = bottom - top
+            if (h > 0) {
+                val m = h - dp(32)
+                if (lpf.bottomMargin != m) {
+                    lpf.bottomMargin = m
+                    b.post { b.layoutParams = lpf }
+                }
+            }
+        }
+    }
+
+    // + turns into × (and back); color fades with it
+    private fun fabLook(open: Boolean, animate: Boolean) {
+        val fb = fab ?: return
+        val bg = fabBg ?: return
+        val rot = if (open) 45f else 0f
+        val to = if (open) FAB_OPEN else ACCENT
+        if (!animate) {
+            fb.animate().cancel()
+            fb.scaleX = 1f
+            fb.scaleY = 1f
+            fb.rotation = rot
+            bg.setColor(to)
+            return
+        }
+        fb.animate().rotation(rot).setDuration(DUR + 60L).setInterpolator(ease).start()
+        ValueAnimator.ofObject(ArgbEvaluator(), if (open) ACCENT else FAB_OPEN, to).apply {
+            duration = DUR + 60L
+            interpolator = ease
+            addUpdateListener { bg.setColor(it.animatedValue as Int) }
+            start()
+        }
+    }
+
+    // icons are drawn in code (0 = income: arrow down, 1 = expense: arrow up, 2 = transfer: two arrows)
+    private fun menuIcon(kind: Int, tint: Int): View = object : View(this@MainActivity) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = tint
+            style = Paint.Style.STROKE
+            strokeWidth = resources.displayMetrics.density * 2.6f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+
+        override fun onDraw(c: Canvas) {
+            val cx = width / 2f
+            val cy = height / 2f
+            val u = width * 0.2f
+            val path = Path()
+            fun tray() {
+                path.moveTo(cx - u, cy + 0.6f * u)
+                path.lineTo(cx - u, cy + u)
+                path.lineTo(cx + u, cy + u)
+                path.lineTo(cx + u, cy + 0.6f * u)
+            }
+            when (kind) {
+                0 -> {
+                    path.moveTo(cx, cy - u); path.lineTo(cx, cy + 0.45f * u)
+                    path.moveTo(cx - 0.7f * u, cy - 0.25f * u)
+                    path.lineTo(cx, cy + 0.45f * u)
+                    path.lineTo(cx + 0.7f * u, cy - 0.25f * u)
+                    tray()
+                }
+                1 -> {
+                    path.moveTo(cx, cy + 0.2f * u); path.lineTo(cx, cy - u)
+                    path.moveTo(cx - 0.7f * u, cy - 0.3f * u)
+                    path.lineTo(cx, cy - u)
+                    path.lineTo(cx + 0.7f * u, cy - 0.3f * u)
+                    tray()
+                }
+                else -> {
+                    path.moveTo(cx - u, cy - 0.5f * u); path.lineTo(cx + u, cy - 0.5f * u)
+                    path.moveTo(cx + 0.4f * u, cy - 0.95f * u)
+                    path.lineTo(cx + u, cy - 0.5f * u)
+                    path.lineTo(cx + 0.4f * u, cy - 0.05f * u)
+                    path.moveTo(cx + u, cy + 0.5f * u); path.lineTo(cx - u, cy + 0.5f * u)
+                    path.moveTo(cx - 0.4f * u, cy + 0.05f * u)
+                    path.lineTo(cx - u, cy + 0.5f * u)
+                    path.lineTo(cx - 0.4f * u, cy + 0.95f * u)
+                }
+            }
+            c.drawPath(path, p)
+        }
+    }
+
+    private fun openAddMenu() {
+        val f = frame ?: return
+        val fb = fab ?: return
+        if (sheet != null) return
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xD9121613.toInt())
+            alpha = 0f
+            setOnClickListener { closeAddMenu() }
+        }
+        // goes right under the + button, so the button stays on top and turns into the close button
+        f.addView(scrim, f.indexOfChild(fb), FrameLayout.LayoutParams(MATCH, MATCH))
+        sheet = scrim
+        addMenu = scrim
+        onSheetClose = {
+            addMenu = null
+            menuClosing = false
+            fabLook(false, false)
+        }
+
+        // height of the middle of the + button above the bottom of the screen
+        val mid = (fb.layoutParams as FrameLayout.LayoutParams).bottomMargin + dp(32)
+        val opts = listOf(
+            MenuOpt("Income", ACCENT, 0, -dp(104), dp(88), 25L),
+            MenuOpt("Expense", DANGER, 1, 0, dp(150), 0L),
+            MenuOpt("Transfer", PURPLE, 2, dp(104), dp(88), 25L)
+        )
+        for (o in opts) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                tag = o.up
+                // starts hidden and small, exactly behind the + button
+                alpha = 0f
+                scaleX = 0.4f
+                scaleY = 0.4f
+                pivotY = dp(30).toFloat()
+                translationY = o.up.toFloat()
+                setOnClickListener { pickAdd(o.kind) }
+            }
+            val circle = FrameLayout(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(o.color)
+                }
+            }
+            circle.addView(menuIcon(o.kind, BG), FrameLayout.LayoutParams(MATCH, MATCH))
+            item.addView(circle, lp(dp(60), dp(60)))
+            item.addView(tv(o.label, 13f, TEXT, true).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(0, dp(8), 0, 0)
+            }, lp(WRAP, dp(28)))
+            scrim.addView(
+                item,
+                FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                    bottomMargin = mid + o.up - dp(58)
+                }
+            )
+            item.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                .translationX(o.dx.toFloat()).translationY(0f)
+                .setStartDelay(o.delay).setDuration(180L).setInterpolator(pop).start()
+        }
+        scrim.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
+        fabLook(true, true)
+    }
+
+    private fun closeAddMenu() {
+        val m = addMenu ?: return
+        if (menuClosing) return
+        menuClosing = true
+        fabLook(false, true)
+        for (i in 0 until m.childCount) {
+            val item = m.getChildAt(i)
+            val up = (item.tag as? Int) ?: 0
+            item.animate().alpha(0f).scaleX(0.4f).scaleY(0.4f)
+                .translationX(0f).translationY(up.toFloat())
+                .setStartDelay(0L).setDuration(DOWN_DUR + 30L).setInterpolator(easeOut).start()
+        }
+        m.animate().alpha(0f).setDuration(DUR).setInterpolator(ease)
+            .withEndAction { if (sheet === m) closeSheet() }
+            .start()
+    }
+
+    private fun pickAdd(kind: Int) {
+        if (menuClosing) return
+        buzz()
+        closeAddMenu()
+        // next step: 0 = Income form, 1 = Expense form, 2 = Transfer form
     }
 
     // ---------- account picker ----------
