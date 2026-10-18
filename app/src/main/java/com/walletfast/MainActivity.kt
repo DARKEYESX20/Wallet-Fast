@@ -72,14 +72,18 @@ class MainActivity : Activity() {
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
-    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1)
+    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1, val cat: String = "")
+
+    // a category the user made himself (built-in ones are in EXP_CATS / INC_CATS). kind: 0 = income, 1 = expense
+    private class Cat(val id: String, var name: String, val kind: Int)
     private class Style(var color: Int, var img: String?)
     private class Look(val bmp: Bitmap?, val styled: Boolean, val light: Boolean, val tc: Int, val sub: Int)
 
     // everything the config JSON holds (also used by backups)
     private class Cfg(
         val accs: List<Acc>, val tpls: List<Tpl>, val active: Int,
-        val nid: Int, val autoClose: Boolean, val vibrate: Boolean, val lang: String
+        val nid: Int, val autoClose: Boolean, val vibrate: Boolean, val lang: String,
+        val cats: List<Cat>
     )
 
     // a parsed backup file, checked and ready to be applied
@@ -149,6 +153,7 @@ class MainActivity : Activity() {
     private val accs = ArrayList<Acc>()
     private val tpls = ArrayList<Tpl>()
     private val txs = ArrayList<Tx>()
+    private val cats = ArrayList<Cat>()    // categories made by the user
     private var nid = 2            // next free account id
     private var active = 0         // id of the active account
     private var tab = 0            // 0 = Templates (home), 1 = Accounts
@@ -209,6 +214,24 @@ class MainActivity : Activity() {
         "From" to "Nereden",
         "To" to "Nereye",
         "Transfer needs two accounts" to "Transfer için iki hesap gerekir",
+        "Transaction" to "İşlem",
+        "Category" to "Kategori",
+        "Category name" to "Kategori adı",
+        "+ New" to "+ Yeni",
+        "Add" to "Ekle",
+        "Groceries" to "Market",
+        "Food & Drink" to "Yeme-İçme",
+        "Transport" to "Ulaşım",
+        "Shopping" to "Alışveriş",
+        "Bills" to "Faturalar",
+        "Subscriptions" to "Abonelikler",
+        "Other" to "Diğer",
+        "Salary" to "Maaş",
+        "Scholarship / Allowance" to "Burs / Harçlık",
+        "Extra income" to "Ek gelir",
+        "Investment return" to "Yatırım getirisi",
+        "Gift" to "Hediye",
+        "Refund" to "İade",
         "Settings" to "Ayarlar",
         "Language" to "Dil",
         "Vibration" to "Titreşim",
@@ -455,6 +478,19 @@ class MainActivity : Activity() {
                 )
             )
         }
+        val cl = ArrayList<Cat>()
+        val ca = o.optJSONArray("cats")
+        if (ca != null) {
+            for (i in 0 until ca.length()) {
+                try {
+                    val x = ca.getJSONObject(i)
+                    val cid = x.getString("id")
+                    if (cid.isEmpty() || cl.any { it.id == cid }) continue
+                    cl.add(Cat(cid, x.getString("n"), if (x.optInt("k", 1) == 0) 0 else 1))
+                } catch (e: Exception) {
+                }
+            }
+        }
         var act = o.optInt("active", 0)
         if (act !in ids) act = list[0].id
         return Cfg(
@@ -462,7 +498,8 @@ class MainActivity : Activity() {
             Math.max(o.optInt("nid", 0), top + 1),
             o.optBoolean("ac", false),
             o.optBoolean("vib", true),
-            o.optString("lang", "tr").let { if (it == "en") "en" else "tr" }
+            o.optString("lang", "tr").let { if (it == "en") "en" else "tr" },
+            cl
         )
     }
 
@@ -474,6 +511,7 @@ class MainActivity : Activity() {
         autoClose = c.autoClose
         vibrate = c.vibrate
         lang = c.lang
+        cats.clear(); cats.addAll(c.cats)
     }
 
     private fun cfgJson(): JSONObject {
@@ -492,7 +530,7 @@ class MainActivity : Activity() {
             )
         }
         return JSONObject().put("accs", a).put("tpls", t).put("active", active)
-            .put("nid", nid).put("ac", autoClose).put("vib", vibrate).put("lang", lang)
+            .put("nid", nid).put("ac", autoClose).put("vib", vibrate).put("lang", lang).put("cats", catsJson())
     }
 
     private fun saveCfg() {
@@ -533,7 +571,7 @@ class MainActivity : Activity() {
                             if (to > maxId) maxId = to
                             m[o.getString("id")] = Tx(
                                 o.getString("id"), o.getLong("t"),
-                                acc, o.getString("l"), o.getDouble("a"), to
+                                acc, o.getString("l"), o.getDouble("a"), to, o.optString("cat", "")
                             )
                         }
                         "undo" -> m.remove(o.getString("ref"))
@@ -557,12 +595,13 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1) {
-        val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), acc, label, amt, to)
+    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "") {
+        val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), acc, label, amt, to, cat)
         txs.add(tx)
         newTxId = tx.id
         val o = JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt)
         if (to >= 0) o.put("to", to)
+        if (cat.isNotEmpty()) o.put("cat", cat)
         append(o)
     }
 
@@ -1608,12 +1647,22 @@ class MainActivity : Activity() {
         }
         val xfer = tx.to >= 0
         // quick-add entries can have an empty note: the title then falls back to Income / Expense / Transfer
-        val title = if (tx.label.isNotEmpty()) tx.label else s(if (xfer) "Transfer" else if (tx.amt < 0) "Expense" else "Income")
+        val cn = catName(tx.cat)
+        // title: the note, else the category, else what kind of entry it is
+        val title = when {
+            tx.label.isNotEmpty() -> tx.label
+            cn != null -> cn
+            xfer -> s("Transfer")
+            tx.amt < 0 -> s("Expense")
+            tx.amt > 0 -> s("Income")
+            else -> s("Transaction")
+        }
+        val tag = if (tx.label.isNotEmpty() && cn != null) cn + " · " else ""
         val from = accOf(tx.acc)?.name ?: ""
         val place = if (xfer) from + " → " + (accOf(tx.to)?.name ?: "") else from
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         info.addView(tv(title, 15f, TEXT, false, user = true))
-        info.addView(tv(place + " · " + df.format(Date(tx.t)), 12f, SUB, false, true))
+        info.addView(tv(tag + place + " · " + df.format(Date(tx.t)), 12f, SUB, false, true))
         r.addView(info, lp(0, WRAP, 1f))
         r.addView(
             tv(
@@ -2032,6 +2081,7 @@ class MainActivity : Activity() {
         for (x in txs) {
             val j = JSONObject().put("id", x.id).put("t", x.t).put("acc", x.acc).put("l", x.label).put("a", x.amt)
             if (x.to >= 0) j.put("to", x.to)
+            if (x.cat.isNotEmpty()) j.put("cat", x.cat)
             ta.put(j)
         }
         o.put("tx", ta)
@@ -2104,7 +2154,7 @@ class MainActivity : Activity() {
             val to = x.optInt("to", -1)
             if (acc !in ids || !seen.add(id)) continue
             if (to >= 0 && (to !in ids || to == acc)) continue     // a transfer needs two different, existing accounts
-            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to))
+            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to, x.optString("cat", "")))
         }
         return Backup(cfg, list, imgs, o.optLong("exported", 0L))
     }
@@ -2151,6 +2201,7 @@ class MainActivity : Activity() {
                     val o = JSONObject().put("k", "tx").put("id", x.id).put("t", x.t).put("acc", x.acc)
                         .put("l", x.label).put("a", x.amt)
                     if (x.to >= 0) o.put("to", x.to)
+                    if (x.cat.isNotEmpty()) o.put("cat", x.cat)
                     w.write(o.toString())
                     w.newLine()
                 }
@@ -2400,9 +2451,101 @@ class MainActivity : Activity() {
         closeSheet()            // runs onSheetClose: resets addMenu and the + button, removes the menu
         openQuickAdd(kind)      // 0 = Income, 1 = Expense, 2 = Transfer
     }
+
+    // ---------- quick add helpers ----------
+
+    // built-in categories: id -> English name (Turkish comes from the TR map). A transaction stores the id.
+    private val EXP_CATS = listOf(
+        "e_groc" to "Groceries", "e_food" to "Food & Drink", "e_trans" to "Transport",
+        "e_shop" to "Shopping", "e_bills" to "Bills", "e_subs" to "Subscriptions", "e_other" to "Other"
+    )
+    private val INC_CATS = listOf(
+        "i_sal" to "Salary", "i_allow" to "Scholarship / Allowance", "i_extra" to "Extra income",
+        "i_inv" to "Investment return", "i_gift" to "Gift", "i_ref" to "Refund", "i_other" to "Other"
+    )
+
+    // display name of a category id; null when there is none (empty id, or a category that was deleted)
+    private fun catName(id: String): String? {
+        if (id.isEmpty()) return null
+        for (c in cats) if (c.id == id) return c.name
+        for (p in EXP_CATS) if (p.first == id) return s(p.second)
+        for (p in INC_CATS) if (p.first == id) return s(p.second)
+        return null
+    }
+
+    private fun catsJson(): JSONArray {
+        val ca = JSONArray()
+        for (c in cats) ca.put(JSONObject().put("id", c.id).put("n", c.name).put("k", c.kind))
+        return ca
+    }
+
+    private fun chipView(text: String, user: Boolean): TextView {
+        val c = tv(text, 12f, SUB, true, user).apply { setPadding(dp(11), dp(7), dp(11), dp(7)) }
+        pressFx(c, 0.96f)
+        return c
+    }
+
+    // small gray label in front of a chip row (fixed 60dp column, so all rows line up)
+    private fun rowLabel(text: String, top: Int): TextView =
+        tv(text, 12f, SUB).apply { setPadding(dp(2), dp(top), dp(4), 0) }
+
+    // packs chips into rows that are at most maxW wide (in order). Measures every chip, so measuredWidth is valid afterward.
+    private fun packRows(chips: List<View>, maxW: Int): List<List<View>> {
+        val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val gap = dp(6)
+        val rows = ArrayList<ArrayList<View>>()
+        var cur = ArrayList<View>()
+        var w = 0
+        for (c in chips) {
+            c.measure(spec, spec)
+            val cw = c.measuredWidth + gap
+            if (cur.isNotEmpty() && w + cw - gap > maxW) {
+                rows.add(cur)
+                cur = ArrayList()
+                w = 0
+            }
+            cur.add(c)
+            w += cw
+        }
+        if (cur.isNotEmpty()) rows.add(cur)
+        return rows
+    }
+
+    // chip rows stacked on top of each other
+    private fun rowsView(rows: List<List<View>>): LinearLayout {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for ((i, r) in rows.withIndex()) {
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (c in r) line.addView(c, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
+            col.addView(line, lp(WRAP, WRAP).apply { setMargins(0, if (i == 0) 0 else dp(6), 0, 0) })
+        }
+        return col
+    }
+
+    // account chips for Income / Expense: up to 2 rows, no scrolling. If they need more than 2 rows,
+    // they are split into exactly 2 rows that scroll sideways together.
+    private fun accRowsView(chips: List<View>, maxW: Int): View {
+        val rows = packRows(chips, maxW)
+        if (rows.size <= 2) return rowsView(rows)
+        var total = 0
+        for (c in chips) total += c.measuredWidth + dp(6)
+        val first = ArrayList<View>()
+        val second = ArrayList<View>()
+        var w = 0
+        for (c in chips) {
+            if (w < total / 2) first.add(c) else second.add(c)
+            w += c.measuredWidth + dp(6)
+        }
+        if (second.isEmpty() && first.size > 1) second.add(first.removeAt(first.size - 1))
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(rowsView(listOf(first, second)))
+        }
+    }
+
     // ---------- quick add: Income / Expense / Transfer ----------
     // One sheet for all three kinds. The number pad is open from the first frame and the account is already
-    // the active one, so the usual entry is: type the amount -> Save. Kind, account and note are optional extras.
+    // the active one, so the usual entry is: type the amount -> Save. Kind, category, account and note are optional extras.
     private fun openQuickAdd(startKind: Int) {
         val f = frame ?: return
         if (sheet != null) return
@@ -2411,7 +2554,12 @@ class MainActivity : Activity() {
         val buf = StringBuilder()
         var acc1 = active                                         // Income / Expense: the account. Transfer: "from"
         var acc2 = accs.firstOrNull { it.id != acc1 }?.id ?: -1   // Transfer: "to"
-        var padOn = true                                          // true = number pad, false = Android keyboard (note)
+        var padOn = true                                          // true = number pad, false = Android keyboard
+        var cat = ""                                              // chosen category id ("" = none)
+        var editing: Cat? = null                                  // own category being renamed / deleted (null = making a new one)
+
+        // width left for chips next to the 60dp label column
+        val avail = (if (f.width > 0) f.width else resources.displayMetrics.widthPixels) - dp(36) - dp(60) - dp(8)
 
         fun kc(k: Int): Int = when (k) {
             0 -> ACCENT
@@ -2464,7 +2612,7 @@ class MainActivity : Activity() {
         val amtBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(10), dp(16), dp(10))
+            setPadding(dp(16), dp(8), dp(16), dp(8))
         }
         val amtTv = tv("0", 34f, SUB, true)
         amtBox.addView(amtTv, lp(0, WRAP, 1f))
@@ -2476,24 +2624,69 @@ class MainActivity : Activity() {
         }
         sh.addView(err)
 
-        // account chips: one row for Income / Expense, two rows (From / To) for Transfer
+        // category (Income / Expense): chips wrap onto as many rows as needed + a small inline editor for own categories
+        var catChips = ArrayList<TextView>()
+        var catIds = ArrayList<String>()
+        val catFlow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val catInput = EditText(this).apply {
+            hint = s("Category name")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            filters = arrayOf<InputFilter>(InputFilter.LengthFilter(18))
+            textSize = 14f
+            typeface = fontReg
+            setTextColor(TEXT)
+            setHintTextColor(SUB)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = box(BG, BORDER)
+        }
+        val catDel = tv("Delete", 13f, DANGER, true).apply {
+            setPadding(dp(12), dp(10), dp(8), dp(10))
+            visibility = View.GONE
+        }
+        val catOk = tv("Add", 13f, BG, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+        }
+        pressFx(catOk, 0.96f)
+        val catEdit = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        catEdit.addView(catInput, lp(0, WRAP, 1f))
+        catEdit.addView(catDel, lp(WRAP, WRAP))
+        catEdit.addView(catOk, lp(WRAP, WRAP).apply { setMargins(dp(4), 0, 0, 0) })
+        val catHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        catHost.addView(catFlow, lp(MATCH, WRAP))
+        catHost.addView(catEdit, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+        val rowCat = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        rowCat.addView(rowLabel("Category", 7), lp(dp(60), WRAP))
+        rowCat.addView(catHost, lp(0, WRAP, 1f))
+        sh.addView(rowCat, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+
+        // account: Income / Expense = all chips visible (max 2 rows), Transfer = From / To rows (scroll sideways)
         val chipsAcc = ArrayList<TextView>()
+        for (a in accs) chipsAcc.add(chipView(a.name, true))
+        val accView = accRowsView(chipsAcc, avail)
+        val hsAcc = accView as? HorizontalScrollView
+        val rowAcc = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        rowAcc.addView(rowLabel("Account", 7), lp(dp(60), WRAP))
+        rowAcc.addView(accView, lp(0, WRAP, 1f))
+        sh.addView(rowAcc, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+
         val chipsFrom = ArrayList<TextView>()
         val chipsTo = ArrayList<TextView>()
 
-        fun chipRow(label: String, chips: ArrayList<TextView>): Pair<LinearLayout, HorizontalScrollView> {
+        fun scrollRow(label: String, chips: ArrayList<TextView>): Pair<LinearLayout, HorizontalScrollView> {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            row.addView(tv(label, 12f, SUB).apply {
-                minWidth = dp(50)
-                setPadding(dp(2), 0, dp(6), 0)
-            }, lp(WRAP, WRAP))
+            row.addView(rowLabel(label, 0), lp(dp(60), WRAP))
             val inner = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for (a in accs) {
-                val chip = tv(a.name, 13f, SUB, true, true).apply { setPadding(dp(14), dp(9), dp(14), dp(9)) }
-                pressFx(chip, 0.96f)
+                val chip = chipView(a.name, true)
                 chips.add(chip)
                 inner.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
             }
@@ -2505,10 +2698,9 @@ class MainActivity : Activity() {
             return Pair(row, hs)
         }
 
-        val (rowAcc, hsAcc) = chipRow("Account", chipsAcc)
-        val (rowFrom, hsFrom) = chipRow("From", chipsFrom)
-        val (rowTo, hsTo) = chipRow("To", chipsTo)
-        for (r in listOf(rowAcc, rowFrom, rowTo)) {
+        val (rowFrom, hsFrom) = scrollRow("From", chipsFrom)
+        val (rowTo, hsTo) = scrollRow("To", chipsTo)
+        for (r in listOf(rowFrom, rowTo)) {
             sh.addView(r, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
         }
         val hint2 = tv("Transfer needs two accounts", 13f, SUB).apply {
@@ -2517,7 +2709,7 @@ class MainActivity : Activity() {
         }
         sh.addView(hint2)
 
-        // note (optional) + recent notes
+        // note (optional)
         val noteEt = EditText(this).apply {
             hint = s("Note (optional)")
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -2531,17 +2723,10 @@ class MainActivity : Activity() {
         }
         sh.addView(noteEt, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
 
-        val recentInner = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val recentHs = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(recentInner)
-        }
-        sh.addView(recentHs, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
-
         // number pad
         val pad = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(8), 0, 0)
         }
         val keyViews = ArrayList<Pair<String, TextView>>()
         val keyRows = listOf(
@@ -2559,7 +2744,7 @@ class MainActivity : Activity() {
                 }
                 pressFx(key, 0.94f)
                 keyViews.add(Pair(k, key))
-                line.addView(key, lp(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+                line.addView(key, lp(0, dp(46), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             }
             pad.addView(line)
         }
@@ -2582,43 +2767,25 @@ class MainActivity : Activity() {
         btns.addView(saveBtn, lp(0, dp(52), 1.5f))
         sh.addView(btns)
 
-        // ----- behaviour -----
-
-        // notes used before (income or expense side), newest first; labels that already have a template are skipped
-        val tplNames = tpls.map { it.label }.toSet()
-        fun recentOf(neg: Boolean): List<String> {
-            val out = ArrayList<String>()
-            for (x in txs.asReversed()) {
-                if (x.to >= 0 || x.amt == 0.0 || x.label.isEmpty() || (x.amt < 0) != neg) continue
-                if (x.label in tplNames) continue
-                if (x.label !in out) out.add(x.label)
-                if (out.size >= 8) break
-            }
-            return out
-        }
-
-        fun fillRecent() {
-            recentInner.removeAllViews()
-            val list = if (kind == 2) emptyList() else recentOf(kind == 1)
-            for (l in list) {
-                val c = tv(l, 13f, SUB, false, true).apply {
-                    setPadding(dp(12), dp(7), dp(12), dp(7))
-                    background = box(KEY)
-                    setOnClickListener {
-                        noteEt.setText(l)
-                        noteEt.setSelection(noteEt.text.length)
-                    }
-                }
-                pressFx(c, 0.96f)
-                recentInner.addView(c, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
-            }
-            recentHs.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-        }
+        // ----- behavior (order matters: a local function can only use the ones above it) -----
 
         fun frames() {
             val c = kc(kind)
             amtBox.background = box(BG, if (padOn) c else BORDER)
-            noteEt.background = box(BG, if (padOn) BORDER else c)
+            noteEt.background = box(BG, if (noteEt.hasFocus()) c else BORDER)
+            catInput.background = box(BG, if (catInput.hasFocus()) c else BORDER)
+        }
+
+        fun showPad(on: Boolean) {
+            padOn = on
+            pad.visibility = if (on) View.VISIBLE else View.GONE
+            frames()
+        }
+
+        fun toAmount() {
+            hideKb()
+            sh.requestFocus()
+            showPad(true)
         }
 
         fun styleChips(chips: List<TextView>, sel: Int, c: Int) {
@@ -2627,6 +2794,99 @@ class MainActivity : Activity() {
                 chip.setTextColor(if (on) c else SUB)
                 chip.background = box(if (on) BG else KEY, if (on) c else 0)
             }
+        }
+
+        fun styleCats() {
+            val c = kc(kind)
+            catChips.forEachIndexed { n, chip ->
+                val on = catIds[n] == cat
+                chip.setTextColor(if (on) c else SUB)
+                chip.background = box(if (on) BG else KEY, if (on) c else 0)
+            }
+        }
+
+        fun closeCatEdit() {
+            if (catEdit.visibility != View.VISIBLE) return
+            editing = null
+            catInput.setText("")
+            catEdit.visibility = View.GONE
+            toAmount()
+        }
+
+        fun openCatEdit(target: Cat?) {
+            editing = target
+            catInput.setText(target?.name ?: "")
+            catInput.setSelection(catInput.text.length)
+            catDel.visibility = if (target != null) View.VISIBLE else View.GONE
+            catOk.text = s(if (target != null) "Save" else "Add")
+            catEdit.visibility = View.VISIBLE
+            catInput.requestFocus()
+            catInput.postDelayed({
+                getSystemService(InputMethodManager::class.java)
+                    ?.showSoftInput(catInput, InputMethodManager.SHOW_IMPLICIT)
+            }, 120)
+        }
+
+        // (re)builds the category chips for the current kind
+        fun fillCats() {
+            catFlow.removeAllViews()
+            if (kind == 2) return
+            val chips = ArrayList<TextView>()
+            val ids = ArrayList<String>()
+            for (p in (if (kind == 0) INC_CATS else EXP_CATS)) {
+                chips.add(chipView(p.second, false))
+                ids.add(p.first)
+            }
+            for (c in cats) {
+                if (c.kind != kind) continue
+                val chip = chipView(c.name, true)
+                chip.isHapticFeedbackEnabled = false
+                chip.setOnLongClickListener { buzz(); openCatEdit(c); true }   // hold = rename / delete
+                chips.add(chip)
+                ids.add(c.id)
+            }
+            chips.forEachIndexed { n, chip ->
+                chip.setOnClickListener {
+                    cat = if (cat == ids[n]) "" else ids[n]                       // tap again = no category
+                    closeCatEdit()
+                    styleCats()
+                }
+            }
+            val plus = chipView("+ New", false)
+            plus.background = box(BG, BORDER)
+            plus.setOnClickListener {
+                if (catEdit.visibility == View.VISIBLE && editing == null) closeCatEdit() else openCatEdit(null)
+            }
+            catChips = chips
+            catIds = ids
+            val all = ArrayList<View>(chips)
+            all.add(plus)
+            catFlow.addView(rowsView(packRows(all, avail)))
+            styleCats()
+        }
+
+        // creates / renames an own category (or picks the one with the same name) and closes the editor
+        fun commitCat() {
+            val nm = catInput.text.toString().trim()
+            val target = editing
+            if (nm.isNotEmpty()) {
+                var same: String? = null
+                for (p in (if (kind == 0) INC_CATS else EXP_CATS)) if (s(p.second).equals(nm, true)) same = p.first
+                for (c in cats) if (c.kind == kind && c.id != target?.id && c.name.equals(nm, true)) same = c.id
+                if (same != null) {
+                    cat = same
+                } else if (target != null) {
+                    target.name = nm
+                    saveCfg()
+                } else {
+                    val nc = Cat("c_" + UUID.randomUUID().toString().substring(0, 8), nm, kind)
+                    cats.add(nc)
+                    saveCfg()
+                    cat = nc.id
+                }
+            }
+            closeCatEdit()
+            fillCats()
         }
 
         // only the amount text (called on every key press)
@@ -2650,6 +2910,7 @@ class MainActivity : Activity() {
                 t.setTextColor(if (k == kind) BG else SUB)
                 t.background = if (k == kind) box(kc(k)) else null
             }
+            rowCat.visibility = if (kind == 2) View.GONE else View.VISIBLE
             rowAcc.visibility = if (kind == 2) View.GONE else View.VISIBLE
             rowFrom.visibility = if (kind == 2 && two) View.VISIBLE else View.GONE
             rowTo.visibility = if (kind == 2 && two) View.VISIBLE else View.GONE
@@ -2658,15 +2919,17 @@ class MainActivity : Activity() {
             styleChips(chipsFrom, acc1, c)
             styleChips(chipsTo, acc2, c)
             saveBtn.background = tap(c)
+            catOk.background = tap(c)
             frames()
             amount()
         }
 
-        // scroll a long chip row so the selected account is visible
-        fun reveal(hs: HorizontalScrollView, chips: List<TextView>, sel: Int) {
+        // scroll a sideways-scrolling chip row so the selected account is visible
+        fun reveal(hs: HorizontalScrollView?, chips: List<TextView>, sel: Int) {
+            val h = hs ?: return
             val n = accs.indexOfFirst { it.id == sel }
             if (n < 0) return
-            hs.post { hs.scrollTo(Math.max(0, chips[n].left - dp(40)), 0) }
+            h.post { h.scrollTo(Math.max(0, chips[n].left - dp(40)), 0) }
         }
 
         fun revealRows() {
@@ -2678,25 +2941,15 @@ class MainActivity : Activity() {
             }
         }
 
-        fun showPad(on: Boolean) {
-            padOn = on
-            pad.visibility = if (on) View.VISIBLE else View.GONE
-            frames()
-        }
-
-        fun toAmount() {
-            hideKb()
-            sh.requestFocus()
-            showPad(true)
-        }
-
         // ----- listeners -----
         segs.forEachIndexed { k, t ->
             t.setOnClickListener {
                 if (kind != k) {
+                    closeCatEdit()
                     kind = k
+                    cat = ""
                     paint()
-                    fillRecent()
+                    fillCats()
                     revealRows()
                 }
             }
@@ -2724,28 +2977,37 @@ class MainActivity : Activity() {
             key.setOnClickListener { press(buf, k); amount() }
             if (k == "←") key.setOnLongClickListener { buf.setLength(0); amount(); true }
         }
-        noteEt.setOnFocusChangeListener { _, has -> if (has) showPad(false) }
+        noteEt.setOnFocusChangeListener { _, has -> if (has) showPad(false) else frames() }
         noteEt.setOnEditorActionListener { _, _, _ -> toAmount(); true }
+        catInput.setOnFocusChangeListener { _, has -> if (has) showPad(false) else frames() }
+        catInput.setOnEditorActionListener { _, _, _ -> commitCat(); true }
+        catOk.setOnClickListener { commitCat() }
+        catDel.setOnClickListener {
+            val target = editing
+            if (target != null) {
+                cats.remove(target)
+                if (cat == target.id) cat = ""
+                saveCfg()
+            }
+            closeCatEdit()
+            fillCats()
+        }
         amtBox.setOnClickListener { toAmount() }
 
         saveBtn.setOnClickListener {
-            val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)
-            val msg = when {
-                v <= 0.0 -> "Enter an amount"
-                kind == 2 && (accs.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null) ->
-                    "Transfer needs two accounts"
-                else -> null
-            }
-            if (msg != null) {
-                err.text = s(msg)
+            if (catEdit.visibility == View.VISIBLE) commitCat()      // a category typed but not added yet still counts
+            val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)        // 0 is allowed on purpose
+            if (kind == 2 && (accs.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
+                err.text = s("Transfer needs two accounts")
                 err.visibility = View.VISIBLE
                 return@setOnClickListener
             }
             val note = noteEt.text.toString().trim()
+            val picked = cat
             closeSheet()
             when (kind) {
-                0 -> addTx(note, v, acc1)
-                1 -> addTx(note, -v, acc1)
+                0 -> addTx(note, v, acc1, -1, picked)
+                1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked)
                 else -> addTx(note, v, acc1, acc2)
             }
             buzz()
@@ -2766,7 +3028,7 @@ class MainActivity : Activity() {
         scroller.animate().translationY(0f).setDuration(DUR + 60L).setInterpolator(ease).start()
 
         paint()
-        fillRecent()
+        fillCats()
         toAmount()
         revealRows()
     }
