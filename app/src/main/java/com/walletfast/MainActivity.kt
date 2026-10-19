@@ -69,7 +69,8 @@ class MainActivity : Activity() {
         var amt: Double,
         var acc: Int = -1,         // account id, -1 = follow the active account
         var color: Int = 0,        // 0 = default card look
-        var img: String? = null    // file name inside filesDir/tpl
+        var img: String? = null,   // file name inside filesDir/tpl
+        var ask: Int = 0           // 0 = normal, 1 = special (asks the price, expense), 2 = special (income)
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
@@ -225,6 +226,9 @@ class MainActivity : Activity() {
         "Template only" to "Sadece şablon",
         "Hidden from the Income, Expense and Transfer lists" to "Gelir, Gider ve Transfer listelerinde görünmez",
         "Template only account" to "Sadece şablon hesabı",
+        "Ask amount on tap" to "Dokununca tutarı sor",
+        "Type the price every time, e.g. coffee or cigarettes" to "Fiyatı her seferinde gir, örn. kahve veya sigara",
+        "Default amount (optional)" to "Varsayılan tutar (isteğe bağlı)",
         "+ New" to "+ Yeni",
         "Add" to "Ekle",
         "Groceries" to "Market",
@@ -485,7 +489,8 @@ class MainActivity : Activity() {
                     x.getDouble("a"),
                     if (c in ids) c else -1,
                     x.optInt("col", 0),
-                    x.optString("img", "").ifEmpty { null }
+                    x.optString("img", "").ifEmpty { null },
+                    x.optInt("ask", 0)
                 )
             )
         }
@@ -536,7 +541,7 @@ class MainActivity : Activity() {
         val t = JSONArray()
         tpls.forEach {
             t.put(
-                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc)
+                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc).put("ask", it.ask)
                     .put("col", it.color).put("img", it.img ?: "")
             )
         }
@@ -1543,6 +1548,8 @@ class MainActivity : Activity() {
                 setOnClickListener {
                     if (edit) {
                         openTplEditor(idx)
+                    } else if (t.ask != 0) {
+                        openAskAmount(t)
                     } else {
                         val now = System.currentTimeMillis()
                         // same template again = likely double tap (250 ms), another template = 100 ms
@@ -1593,12 +1600,13 @@ class MainActivity : Activity() {
             }
             c.addView(tv(t.label, 23f, tc, true, user = true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
+                t.ask != 0 -> if (light) (if (t.ask == 1) 0xFFC62828.toInt() else 0xFF0B7A55.toInt()) else if (t.ask == 1) DANGER else ACCENT
                 t.amt == 0.0 -> if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB   // dimmer than the name
                 light -> if (t.amt < 0) 0xFFC62828.toInt() else 0xFF0B7A55.toInt() // deeper tones on light cards
                 t.amt < 0 -> DANGER
                 else -> ACCENT
             }
-            c.addView(tv(sgn(t.amt), 21f, amtCol, true).apply {
+            c.addView(tv(if (t.ask == 1) "-₺?" else if (t.ask == 2) "+₺?" else sgn(t.amt), 21f, amtCol, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             })
@@ -3602,16 +3610,27 @@ class MainActivity : Activity() {
         while ("$p $n" in used) n++
         return "$p $n"
     }
+
     private fun openTplEditor(idx: Int) {
         val isNew = idx < 0
-        val st = if (isNew) Style(0, null) else Style(tpls[idx].color, tpls[idx].img)
-        val origImg = if (isNew) null else tpls[idx].img
+        val old = if (isNew) null else tpls[idx]
+        val st = if (old == null) Style(0, null) else Style(old.color, old.img)
+        val origImg = old?.img
+        // [0] = "Ask amount on tap" switch, [1] = Expense (true) / Income (false), filled in when saving
+        val askRef = booleanArrayOf(old != null && old.ask != 0, true)
+        // a special template keeps only a suggested amount (always positive); its sign comes from its kind
+        val startAmt: Double? =
+            if (old == null) null
+            else if (old.ask == 0) old.amt
+            else if (old.amt == 0.0) null
+            else if (old.ask == 1) -old.amt
+            else old.amt
         openEditor(
-            title = if (isNew) "New Template" else "Edit Template",
+            title = if (old == null) "New Template" else "Edit Template",
             nameHint = "Name",
-            name = if (isNew) "" else tpls[idx].label,
+            name = old?.label ?: "",
             amountLabel = "Amount",
-            amount = if (isNew) null else tpls[idx].amt,
+            amount = startAmt,
             negLabel = "Expense",
             posLabel = "Income",
             startOnName = isNew,
@@ -3623,21 +3642,26 @@ class MainActivity : Activity() {
                 saveCfg()
                 render()
             }),
-            accSel = if (isNew) -1 else tpls[idx].acc.let { if (accOf(it) != null) it else -1 },
-            style = st
+            accSel = if (old == null) -1 else old.acc.let { if (accOf(it) != null) it else -1 },
+            style = st,
+            defaultNeg = old == null || old.ask != 2,
+            askRef = askRef
         ) { nm0, v, a ->
             val nm = if (nm0.isEmpty()) untitled(idx) else nm0
+            val ask = if (askRef[0]) (if (askRef[1]) 1 else 2) else 0
+            val amt = if (ask != 0) Math.abs(v) else v
             // old photo is no longer used -> free the file
             if (origImg != null && origImg != st.img) deleteImg(origImg)
             if (isNew) {
-                tpls.add(Tpl(nm, v, a, st.color, st.img))
+                tpls.add(Tpl(nm, amt, a, st.color, st.img, ask))
             } else {
                 val e = tpls[idx]
                 e.label = nm
-                e.amt = v
+                e.amt = amt
                 e.acc = a
                 e.color = st.color
                 e.img = st.img
+                e.ask = ask
             }
             saveCfg()
             render()
@@ -3660,6 +3684,132 @@ class MainActivity : Activity() {
                 buf.append(k)
             }
         }
+    }
+
+    // ---------- special template: asks for the amount on every tap ----------
+    private fun openAskAmount(t: Tpl) {
+        val f = frame ?: return
+        if (sheet != null) return
+        val expense = t.ask == 1
+        val c = if (expense) DANGER else ACCENT
+        val acc = accOf(t.acc) ?: activeAcc()
+        val buf = StringBuilder(if (t.amt > 0.0) raw(t.amt) else "")
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeSheet() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(16))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+        sh.addView(tv(t.label, 18f, TEXT, true, user = true).apply { setPadding(dp(2), 0, 0, 0) })
+        sh.addView(tv(acc.name, 12f, SUB, false, true).apply { setPadding(dp(2), dp(2), 0, dp(10)) })
+
+        val amtBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = box(BG, c)
+        }
+        val amtTv = tv("0", 34f, SUB, true)
+        amtBox.addView(amtTv, lp(0, WRAP, 1f))
+        sh.addView(amtBox, lp(MATCH, WRAP))
+
+        val err = tv("", 12f, DANGER).apply {
+            setPadding(dp(2), dp(8), 0, 0)
+            visibility = View.GONE
+        }
+        sh.addView(err)
+
+        fun refresh() {
+            val txt = buf.toString()
+            val v = txt.toDoubleOrNull() ?: 0.0
+            val sign = if (v == 0.0) "" else if (expense) "-" else "+"
+            amtTv.text = sign + "₺" + grp(txt)
+            amtTv.setTextColor(if (buf.isEmpty()) SUB else c)
+            err.visibility = View.GONE
+        }
+
+        val pad = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        val keyRows = listOf(
+            listOf("7", "8", "9"),
+            listOf("4", "5", "6"),
+            listOf("1", "2", "3"),
+            listOf(".", "0", "←")
+        )
+        for (rw in keyRows) {
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (k in rw) {
+                val key = tv(k, 22f, TEXT, true).apply {
+                    gravity = Gravity.CENTER
+                    background = tap(KEY)
+                    setOnClickListener { press(buf, k); refresh() }
+                    if (k == "←") setOnLongClickListener { buf.setLength(0); refresh(); true }
+                }
+                pressFx(key, 0.94f)
+                line.addView(key, lp(0, dp(50), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+            }
+            pad.addView(line)
+        }
+        sh.addView(pad)
+
+        val btns = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        val cancelBtn = tv("Cancel", 16f, SUB, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(KEY)
+            setOnClickListener { closeSheet() }
+        }
+        pressFx(cancelBtn, 0.97f)
+        btns.addView(cancelBtn, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        val saveBtn = tv("Save", 16f, BG, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(c)
+            setOnClickListener {
+                val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)
+                if (v == 0.0) {
+                    err.text = s("Enter an amount")
+                    err.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                closeSheet()
+                addTx(t.label, if (expense) -v else v, acc.id)
+                buzz()
+                if (autoClose) quit() else render()
+            }
+        }
+        pressFx(saveBtn, 0.97f)
+        btns.addView(saveBtn, lp(0, dp(52), 1.5f))
+        sh.addView(btns)
+
+        val scroller = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(sh)
+        }
+        scrim.addView(scroller, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        scrim.alpha = 0f
+        scroller.translationY = dp(48).toFloat()
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        sheet = scrim
+        scrim.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
+        scroller.animate().translationY(0f).setDuration(DUR + 60L).setInterpolator(ease).start()
+        refresh()
     }
 
     private fun closeSheet() {
@@ -3687,6 +3837,7 @@ class MainActivity : Activity() {
         style: Style? = null,
         defaultNeg: Boolean = true,
         tplOnlyRef: BooleanArray? = null,
+        askRef: BooleanArray? = null,
         onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
@@ -3759,7 +3910,9 @@ class MainActivity : Activity() {
         sh.addView(nameEt, lp(MATCH, WRAP))
 
         // amount
-        sh.addView(tv(amountLabel, 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
+        val amtLabelTv = tv(amountLabel, 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) }
+        if (askRef != null && askRef[0]) amtLabelTv.text = s("Default amount (optional)")
+        sh.addView(amtLabelTv)
         val amtBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -3881,6 +4034,25 @@ class MainActivity : Activity() {
             styleLook()
         }
 
+        // template only: "Ask amount on tap" switch (special template)
+        if (askRef != null) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(10), dp(12), dp(10))
+                background = box(BG, BORDER)
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(tv("Ask amount on tap", 14f, TEXT, true))
+            col.addView(tv("Type the price every time, e.g. coffee or cigarettes", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
+            row.addView(col, lp(0, WRAP, 1f))
+            row.addView(toggle(askRef[0], {
+                askRef[0] = it
+                amtLabelTv.text = s(if (it) "Default amount (optional)" else amountLabel)
+            }), lp(dp(50), dp(28)))
+            sh.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
+        }
+
         // account only: "Template only" switch
         if (tplOnlyRef != null) {
             val row = LinearLayout(this).apply {
@@ -3973,6 +4145,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 saved = true
+                askRef?.let { it[1] = neg }
                 closeSheet()
                 onSave(nm, if (neg) -v else v, pick)
             }
