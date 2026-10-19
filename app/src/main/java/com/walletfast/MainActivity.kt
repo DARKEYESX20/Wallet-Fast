@@ -1632,17 +1632,38 @@ class MainActivity : Activity() {
             })
             cell(item)
         }
-        // slim full-width bar so it takes little space
+
+        // even count: slim full-width bar under the grid
+        // odd count: square card that fills the empty slot on the bottom right
+        val odd = tpls.size % 2 == 1
         val add = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(11), dp(8), dp(11))
+            if (odd) setPadding(dp(8), dp(36), dp(8), dp(36))
+            else setPadding(dp(8), dp(11), dp(8), dp(11))
             background = tap(BG, GHOST)
             setOnClickListener { openTplEditor(-1) }
         }
-        pressFx(add, 0.98f)
-        add.addView(tv("+ New Template", 14f, SUB, true).apply { gravity = Gravity.CENTER })
-        val ap = GridLayout.LayoutParams(GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(GridLayout.UNDEFINED, 2, 1f))
+        pressFx(add, if (odd) 0.96f else 0.98f)
+        val ap: GridLayout.LayoutParams
+        if (odd) {
+            add.addView(tv("+", 30f, SUB, true).apply { gravity = Gravity.CENTER })
+            add.addView(tv("New Template", 14f, SUB, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, 0)
+            })
+            // row weight = 1f -> the card stretches to the same height as the template card on its left
+            ap = GridLayout.LayoutParams(
+                GridLayout.spec(GridLayout.UNDEFINED, 1f),
+                GridLayout.spec(GridLayout.UNDEFINED, 1, 1f)
+            )
+        } else {
+            add.addView(tv("+ New Template", 14f, SUB, true).apply { gravity = Gravity.CENTER })
+            ap = GridLayout.LayoutParams(
+                GridLayout.spec(GridLayout.UNDEFINED),
+                GridLayout.spec(GridLayout.UNDEFINED, 2, 1f)
+            )
+        }
         ap.width = 0
         ap.setMargins(dp(4), dp(4), dp(4), dp(4))
         grid.addView(add, ap)
