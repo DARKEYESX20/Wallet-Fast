@@ -224,7 +224,7 @@ class MainActivity : Activity() {
         "Yesterday" to "Dün",
         "Edit Transaction" to "İşlemi Düzenle",
         "Template only" to "Sadece şablon",
-        "Hidden from the Income, Expense and Transfer lists" to "Gelir, Gider ve Transfer listelerinde görünmez",
+        "Hidden from the Income and Expense lists" to "Gelir ve Gider listelerinde görünmez",
         "Template only account" to "Sadece şablon hesabı",
         "Ask amount on tap" to "Dokununca tutarı sor",
         "Type the price every time, e.g. coffee or cigarettes" to "Fiyatı her seferinde gir, örn. kahve veya sigara",
@@ -2928,12 +2928,13 @@ class MainActivity : Activity() {
         if (sheet != null) return
 
         // accounts offered here: template-only ones are left out (unless the entry being edited already uses one)
-        val qa = accs.filter { !it.tplOnly || (ed != null && (it.id == ed.acc || it.id == ed.to)) }
+        val qa = accs.filter { !it.tplOnly || (ed != null && ed.to < 0 && it.id == ed.acc) }
+        val qt = accs.toList()   // Transfer: tüm hesaplar
 
         var kind = startKind                                      // 0 = Income, 1 = Expense, 2 = Transfer
         val buf = StringBuilder(if (ed == null) "" else raw(Math.abs(ed.amt)))
         var acc1 = ed?.acc ?: active                                         // Income / Expense: the account. Transfer: "from"
-        var acc2 = if (ed != null && ed.to >= 0) ed.to else (qa.firstOrNull { it.id != acc1 }?.id ?: -1)   // Transfer: "to"
+        var acc2 = if (ed != null && ed.to >= 0) ed.to else (qt.firstOrNull { it.id != acc1 }?.id ?: -1)   // Transfer: "to"
         var padOn = true                                          // true = number pad, false = Android keyboard
         var cat = if (ed != null && ed.cat.isNotEmpty() && catName(ed.cat) != null) ed.cat else ""                                              // chosen category id ("" = none)
         var editing: Cat? = null                                  // own category being renamed / deleted (null = making a new one)
@@ -3071,7 +3072,7 @@ class MainActivity : Activity() {
             }
             row.addView(rowLabel(label, 0), lp(dp(60), WRAP))
             val inner = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (a in qa) {
+            for (a in qt) {
                 val chip = chipView(a.name, true)
                 chips.add(chip)
                 inner.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
@@ -3181,9 +3182,9 @@ class MainActivity : Activity() {
         }
         dateHost.addView(dateF.view)
 
-        fun styleChips(chips: List<TextView>, sel: Int, c: Int) {
+        fun styleChips(chips: List<TextView>, list: List<Acc>, sel: Int, c: Int) {
             chips.forEachIndexed { n, chip ->
-                val on = qa[n].id == sel
+                val on = list[n].id == sel
                 chip.setTextColor(if (on) c else SUB)
                 chip.background = box(if (on) BG else KEY, if (on) c else 0)
             }
@@ -3295,9 +3296,11 @@ class MainActivity : Activity() {
         // everything that depends on the kind or on the chosen accounts
         fun paint() {
             val c = kc(kind)
-            val two = qa.size >= 2
+            val two = qt.size >= 2
+            // Transfer'den Income/Expense'e geçerken seçili hesap template-only ise normal bir hesaba dön
+            if (kind != 2 && qa.none { it.id == acc1 }) acc1 = qa.firstOrNull()?.id ?: acc1
             if (kind == 2 && two && (acc2 == acc1 || accOf(acc2) == null)) {
-                acc2 = qa.firstOrNull { it.id != acc1 }?.id ?: -1
+                acc2 = qt.firstOrNull { it.id != acc1 }?.id ?: -1
             }
             segs.forEachIndexed { k, t ->
                 t.setTextColor(if (k == kind) BG else SUB)
@@ -3308,9 +3311,9 @@ class MainActivity : Activity() {
             rowFrom.visibility = if (kind == 2 && two) View.VISIBLE else View.GONE
             rowTo.visibility = if (kind == 2 && two) View.VISIBLE else View.GONE
             hint2.visibility = if (kind == 2 && !two) View.VISIBLE else View.GONE
-            styleChips(chipsAcc, acc1, c)
-            styleChips(chipsFrom, acc1, c)
-            styleChips(chipsTo, acc2, c)
+            styleChips(chipsAcc, qa, acc1, c)
+            styleChips(chipsFrom, qt, acc1, c)
+            styleChips(chipsTo, qt, acc2, c)
             saveBtn.background = tap(c)
             catOk.background = tap(c)
             dateF.restyle()
@@ -3319,19 +3322,19 @@ class MainActivity : Activity() {
         }
 
         // scroll a sideways-scrolling chip row so the selected account is visible
-        fun reveal(hs: HorizontalScrollView?, chips: List<TextView>, sel: Int) {
+        fun reveal(hs: HorizontalScrollView?, chips: List<TextView>, list: List<Acc>, sel: Int) {
             val h = hs ?: return
-            val n = qa.indexOfFirst { it.id == sel }
+            val n = list.indexOfFirst { it.id == sel }
             if (n < 0) return
             h.post { h.scrollTo(Math.max(0, chips[n].left - dp(40)), 0) }
         }
 
         fun revealRows() {
             if (kind == 2) {
-                reveal(hsFrom, chipsFrom, acc1)
-                reveal(hsTo, chipsTo, acc2)
+                reveal(hsFrom, chipsFrom, qt, acc1)
+                reveal(hsTo, chipsTo, qt, acc2)
             } else {
-                reveal(hsAcc, chipsAcc, acc1)
+                reveal(hsAcc, chipsAcc, qa, acc1)
             }
         }
 
@@ -3353,7 +3356,7 @@ class MainActivity : Activity() {
         }
         chipsFrom.forEachIndexed { n, chip ->
             chip.setOnClickListener {
-                val id = qa[n].id
+                val id = qt[n].id
                 if (id == acc2) acc2 = acc1          // picking the "to" account as "from" swaps them
                 acc1 = id
                 paint()
@@ -3361,7 +3364,7 @@ class MainActivity : Activity() {
         }
         chipsTo.forEachIndexed { n, chip ->
             chip.setOnClickListener {
-                val id = qa[n].id
+                val id = qt[n].id
                 if (id == acc1) acc1 = acc2          // picking the "from" account as "to" swaps them
                 acc2 = id
                 paint()
@@ -3391,7 +3394,7 @@ class MainActivity : Activity() {
         saveBtn.setOnClickListener {
             if (catEdit.visibility == View.VISIBLE) commitCat()      // a category typed but not added yet still counts
             val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)        // 0 is allowed on purpose
-            if (kind == 2 && (qa.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
+            if (kind == 2 && (qt.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
                 err.text = s("Transfer needs two accounts")
                 err.visibility = View.VISIBLE
                 return@setOnClickListener
@@ -4063,7 +4066,7 @@ class MainActivity : Activity() {
             }
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             col.addView(tv("Template only", 14f, TEXT, true))
-            col.addView(tv("Hidden from the Income, Expense and Transfer lists", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
+            col.addView(tv("Hidden from the Income and Expense lists", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
             row.addView(col, lp(0, WRAP, 1f))
             row.addView(toggle(tplOnlyRef[0], { tplOnlyRef[0] = it }), lp(dp(50), dp(28)))
             sh.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
