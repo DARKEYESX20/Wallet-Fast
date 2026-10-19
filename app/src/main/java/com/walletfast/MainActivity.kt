@@ -220,6 +220,7 @@ class MainActivity : Activity() {
         "Date" to "Tarih",
         "Today" to "Bugün",
         "Yesterday" to "Dün",
+        "Edit Transaction" to "İşlemi Düzenle",
         "+ New" to "+ Yeni",
         "Add" to "Ekle",
         "Groceries" to "Market",
@@ -606,6 +607,43 @@ class MainActivity : Activity() {
         if (to >= 0) o.put("to", to)
         if (cat.isNotEmpty()) o.put("cat", cat)
         append(o)
+    }
+
+    private fun openTxEditor(tx: Tx) =
+        openQuickAdd(if (tx.to >= 0) 2 else if (tx.amt > 0) 0 else 1, tx)
+
+    // an edited transaction replaces its own line in transactions.jsonl (same id, so undo lines still point at it)
+    private fun updateTx(nw: Tx): Boolean {
+        if (!file.exists()) return false
+        return try {
+            val tmp = File(filesDir, "transactions.jsonl.tmp")
+            tmp.bufferedWriter().use { w ->
+                file.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    var out = line
+                    try {
+                        val o = JSONObject(line)
+                        if (o.getString("k") == "tx" && o.getString("id") == nw.id) {
+                            val n = JSONObject().put("k", "tx").put("id", nw.id).put("t", nw.t).put("acc", nw.acc)
+                                .put("l", nw.label).put("a", nw.amt)
+                            if (nw.to >= 0) n.put("to", nw.to)
+                            if (nw.cat.isNotEmpty()) n.put("cat", nw.cat)
+                            out = n.toString()
+                        }
+                    } catch (e: Exception) {
+                    }
+                    w.write(out)
+                    w.newLine()
+                }
+            }
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun undo(tx: Tx) {
@@ -1682,6 +1720,10 @@ class MainActivity : Activity() {
                     .start()
             }
         })
+        // hold a row to edit it (same sheet as quick add, filled in)
+        r.isHapticFeedbackEnabled = false
+        r.setOnLongClickListener { buzz(); openTxEditor(tx); true }
+        pressFx(r, 0.98f)
         // only the row that was just added fades in; the rest stay still
         if (tx.id == newTxId) {
             r.alpha = 0f
@@ -2633,7 +2675,7 @@ class MainActivity : Activity() {
     }
 
     // onOpen(true) = a panel opened, onOpen(false) = it was closed by the user
-    private fun dateField(start: Long, accent: () -> Int, onOpen: (Boolean) -> Unit): DateField {
+    private fun dateField(start: Long, accent: () -> Int, fixed: Boolean = false, onOpen: (Boolean) -> Unit): DateField {
         val today = dayStart(System.currentTimeMillis())
         val yesterday = shiftDay(today, -1)
         val st = Calendar.getInstance().apply { timeInMillis = start }
@@ -2834,15 +2876,15 @@ class MainActivity : Activity() {
             col,
             {
                 if (!touched) {
-                    System.currentTimeMillis()
+                    if (fixed) start else System.currentTimeMillis()
                 } else {
-                    val now = Calendar.getInstance()
+                    val ref = if (fixed) st else Calendar.getInstance()   // seconds come from the old entry when editing
                     val c = Calendar.getInstance()
                     c.timeInMillis = day
                     c.set(Calendar.HOUR_OF_DAY, hh)
                     c.set(Calendar.MINUTE, mi)
-                    c.set(Calendar.SECOND, now.get(Calendar.SECOND))
-                    c.set(Calendar.MILLISECOND, now.get(Calendar.MILLISECOND))
+                    c.set(Calendar.SECOND, ref.get(Calendar.SECOND))
+                    c.set(Calendar.MILLISECOND, ref.get(Calendar.MILLISECOND))
                     Math.min(c.timeInMillis, System.currentTimeMillis())   // never in the future
                 }
             },
@@ -2854,16 +2896,16 @@ class MainActivity : Activity() {
     // ---------- quick add: Income / Expense / Transfer ----------
     // One sheet for all three kinds. The number pad is open from the first frame and the account is already
     // the active one, so the usual entry is: type the amount -> Save. Kind, category, account and note are optional extras.
-    private fun openQuickAdd(startKind: Int) {
+    private fun openQuickAdd(startKind: Int, ed: Tx? = null) {
         val f = frame ?: return
         if (sheet != null) return
 
         var kind = startKind                                      // 0 = Income, 1 = Expense, 2 = Transfer
-        val buf = StringBuilder()
-        var acc1 = active                                         // Income / Expense: the account. Transfer: "from"
-        var acc2 = accs.firstOrNull { it.id != acc1 }?.id ?: -1   // Transfer: "to"
+        val buf = StringBuilder(if (ed == null) "" else raw(Math.abs(ed.amt)))
+        var acc1 = ed?.acc ?: active                                         // Income / Expense: the account. Transfer: "from"
+        var acc2 = if (ed != null && ed.to >= 0) ed.to else (accs.firstOrNull { it.id != acc1 }?.id ?: -1)   // Transfer: "to"
         var padOn = true                                          // true = number pad, false = Android keyboard
-        var cat = ""                                              // chosen category id ("" = none)
+        var cat = if (ed != null && ed.cat.isNotEmpty() && catName(ed.cat) != null) ed.cat else ""                                              // chosen category id ("" = none)
         var editing: Cat? = null                                  // own category being renamed / deleted (null = making a new one)
 
         // width left for chips next to the 60dp label column
@@ -2896,6 +2938,8 @@ class MainActivity : Activity() {
             View(this).apply { background = box(BORDER) },
             lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
         )
+
+        if (ed != null) sh.addView(tv("Edit Transaction", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(10)) })
 
         // kind switch: Income | Expense | Transfer
         val segs = ArrayList<TextView>()
@@ -3024,6 +3068,7 @@ class MainActivity : Activity() {
         // note (optional)
         val noteEt = EditText(this).apply {
             hint = s("Note (optional)")
+            if (ed != null) setText(ed.label)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = EditorInfo.IME_ACTION_DONE
             filters = arrayOf<InputFilter>(InputFilter.LengthFilter(24))
@@ -3101,7 +3146,7 @@ class MainActivity : Activity() {
         }
 
         // date + time: while a panel (calendar / time wheels) is open the number pad steps aside
-        val dateF = dateField(System.currentTimeMillis(), { kc(kind) }) { opened ->
+        val dateF = dateField(ed?.t ?: System.currentTimeMillis(), { kc(kind) }, ed != null) { opened ->
             if (opened) { hideKb(); sh.requestFocus(); showPad(false) } else toAmount()
         }
         dateHost.addView(dateF.view)
@@ -3325,10 +3370,21 @@ class MainActivity : Activity() {
             val picked = cat
             val whenMs = dateF.time()
             closeSheet()
-            when (kind) {
-                0 -> addTx(note, v, acc1, -1, picked, whenMs)
-                1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked, whenMs)
-                else -> addTx(note, v, acc1, acc2, "", whenMs)
+            if (ed == null) {
+                when (kind) {
+                    0 -> addTx(note, v, acc1, -1, picked, whenMs)
+                    1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked, whenMs)
+                    else -> addTx(note, v, acc1, acc2, "", whenMs)
+                }
+            } else {
+                val amt = if (kind == 1 && v != 0.0) -v else v
+                val nw = Tx(ed.id, whenMs, acc1, note, amt, if (kind == 2) acc2 else -1, if (kind == 2) "" else picked)
+                if (updateTx(nw)) {
+                    val i = txs.indexOf(ed)
+                    if (i >= 0) txs[i] = nw
+                } else {
+                    snack("Couldn't save entry")
+                }
             }
             buzz()
             render()
