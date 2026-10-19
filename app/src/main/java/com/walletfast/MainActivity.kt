@@ -865,7 +865,11 @@ class MainActivity : Activity() {
         return if (a % 1.0 == 0.0) String.format(Locale.US, "%,d", a.toLong()) else String.format(Locale.US, "%,.2f", a)
     }
 
-    private fun fmt(n: Double) = (if (n < 0) "-" else "") + "₺" + num(n)
+    // Turkish: 500₺ (symbol after) / English: ₺500 (symbol before)
+    private fun money(sign: String, body: String) =
+        if (lang == "tr") "$sign$body₺" else "$sign₺$body"
+
+    private fun fmt(n: Double) = money(if (n < 0) "-" else "", num(n))
     private fun sgn(n: Double) = (if (n > 0) "+" else "") + fmt(n)
     private fun raw(n: Double) = if (n % 1.0 == 0.0) n.toLong().toString() else String.format(Locale.US, "%.2f", n)
 
@@ -1621,7 +1625,7 @@ class MainActivity : Activity() {
                 t.amt < 0 -> DANGER
                 else -> ACCENT
             }
-            c.addView(tv(if (t.ask == 1) "-₺?" else if (t.ask == 2) "+₺?" else sgn(t.amt), 18f, amtCol, true).apply {
+            c.addView(tv(if (t.ask == 1) money("-", "?") else if (t.ask == 2) money("+", "?") else sgn(t.amt), 18f, amtCol, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             })
@@ -3324,7 +3328,7 @@ class MainActivity : Activity() {
             val raw = buf.toString()
             val v = raw.toDoubleOrNull() ?: 0.0
             val sign = if (kind == 2 || v == 0.0) "" else if (kind == 1) "-" else "+"
-            amtTv.text = sign + "₺" + grp(raw)
+            amtTv.text = money(sign, grp(raw))
             amtTv.setTextColor(if (buf.isEmpty()) SUB else kc(kind))
             err.visibility = View.GONE
         }
@@ -3775,7 +3779,7 @@ class MainActivity : Activity() {
             val txt = buf.toString()
             val v = txt.toDoubleOrNull() ?: 0.0
             val sign = if (v == 0.0) "" else if (expense) "-" else "+"
-            amtTv.text = sign + "₺" + grp(txt)
+            amtTv.text = money(sign, grp(txt))
             amtTv.setTextColor(if (buf.isEmpty()) SUB else c)
             err.visibility = View.GONE
         }
@@ -4124,7 +4128,7 @@ class MainActivity : Activity() {
             val v = buf.toString().toDoubleOrNull() ?: 0.0
             val empty = buf.isEmpty()
             val sign = if (neg && v != 0.0) "-" else ""
-            amtTv.text = sign + "₺" + grp(buf.toString())
+            amtTv.text = money(sign, grp(buf.toString()))
             amtTv.setTextColor(if (empty) SUB else if (neg) DANGER else ACCENT)
             segNeg.setTextColor(if (neg) BG else SUB)
             segPos.setTextColor(if (!neg) BG else SUB)
