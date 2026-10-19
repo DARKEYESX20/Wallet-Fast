@@ -217,6 +217,9 @@ class MainActivity : Activity() {
         "Transaction" to "İşlem",
         "Category" to "Kategori",
         "Category name" to "Kategori adı",
+        "Date" to "Tarih",
+        "Today" to "Bugün",
+        "Yesterday" to "Dün",
         "+ New" to "+ Yeni",
         "Add" to "Ekle",
         "Groceries" to "Market",
@@ -595,8 +598,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "") {
-        val tx = Tx(UUID.randomUUID().toString(), System.currentTimeMillis(), acc, label, amt, to, cat)
+    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "", t: Long = System.currentTimeMillis()) {
+        val tx = Tx(UUID.randomUUID().toString(), t, acc, label, amt, to, cat)
         txs.add(tx)
         newTxId = tx.id
         val o = JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt)
@@ -2543,6 +2546,311 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- date & time field (date chip + time chip, each opens an in-app panel) ----------
+    private class DateField(val view: View, val time: () -> Long, val restyle: () -> Unit, val close: () -> Unit)
+
+    private fun dayStart(t: Long): Long {
+        val c = Calendar.getInstance()
+        c.timeInMillis = t
+        c.set(Calendar.HOUR_OF_DAY, 0)
+        c.set(Calendar.MINUTE, 0)
+        c.set(Calendar.SECOND, 0)
+        c.set(Calendar.MILLISECOND, 0)
+        return c.timeInMillis
+    }
+
+    private fun shiftDay(t: Long, n: Int): Long {
+        val c = Calendar.getInstance()
+        c.timeInMillis = t
+        c.add(Calendar.DAY_OF_MONTH, n)
+        return dayStart(c.timeInMillis)
+    }
+
+    // vertical wheel: 3 rows visible, the middle one is selected, snaps to the nearest row
+    @SuppressLint("ClickableViewAccessibility")
+    private fun wheel(count: Int, init: Int, color: Int, onPick: (Int) -> Unit): View {
+        val ih = dp(40)
+        val sv = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, ih, 0, ih)
+        }
+        val items = ArrayList<TextView>()
+        for (i in 0 until count) {
+            val t = tv(String.format(Locale.US, "%02d", i), 22f, SUB, true, true).apply { gravity = Gravity.CENTER }
+            items.add(t)
+            col.addView(t, lp(MATCH, ih))
+        }
+        sv.addView(col)
+        var cur = init.coerceIn(0, count - 1)
+        fun paintItems() {
+            items.forEachIndexed { i, t ->
+                t.setTextColor(if (i == cur) color else SUB)
+                t.alpha = if (i == cur) 1f else 0.5f
+            }
+        }
+        fun nearest(): Int = Math.round(sv.scrollY / ih.toFloat()).coerceIn(0, count - 1)
+        var last = -1
+        val settle = object : Runnable {
+            override fun run() {
+                val y = sv.scrollY
+                if (y == last) {
+                    val n = nearest()
+                    if (y != n * ih) sv.smoothScrollTo(0, n * ih)
+                } else {
+                    last = y
+                    sv.postDelayed(this, 60)
+                }
+            }
+        }
+        sv.setOnScrollChangeListener { _, _, _, _, _ ->
+            val n = nearest()
+            if (n != cur) {
+                cur = n
+                paintItems()
+                onPick(n)
+            }
+        }
+        sv.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    v.removeCallbacks(settle)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    last = -1
+                    v.postDelayed(settle, 60)
+                }
+            }
+            false
+        }
+        paintItems()
+        sv.post { sv.scrollTo(0, cur * ih) }
+        return sv
+    }
+
+    // onOpen(true) = a panel opened, onOpen(false) = it was closed by the user
+    private fun dateField(start: Long, accent: () -> Int, onOpen: (Boolean) -> Unit): DateField {
+        val today = dayStart(System.currentTimeMillis())
+        val yesterday = shiftDay(today, -1)
+        val st = Calendar.getInstance().apply { timeInMillis = start }
+        var day = dayStart(start)
+        var hh = st.get(Calendar.HOUR_OF_DAY)
+        var mi = st.get(Calendar.MINUTE)
+        var touched = false     // false = nothing was changed, the entry gets the exact time of saving
+        var panel = 0           // 0 = closed, 1 = calendar, 2 = time wheels
+        val mon = Calendar.getInstance()   // month shown in the calendar
+
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(rowLabel("Date", 0), lp(dp(60), WRAP))
+        val cDate = chipView("", true)
+        val cTime = chipView("", true)
+        row.addView(cDate, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
+        row.addView(cTime, lp(WRAP, WRAP))
+        col.addView(row, lp(MATCH, WRAP))
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, dp(10), 0, 0)
+        }
+        col.addView(body, lp(MATCH, WRAP))
+
+        fun dateText(): String {
+            if (day == today) return s("Today")
+            if (day == yesterday) return s("Yesterday")
+            val y1 = Calendar.getInstance().get(Calendar.YEAR)
+            val y2 = Calendar.getInstance().apply { timeInMillis = day }.get(Calendar.YEAR)
+            return SimpleDateFormat(if (y1 == y2) "d MMM" else "d MMM yyyy", loc()).format(Date(day))
+        }
+
+        fun look() {
+            val c = accent()
+            cDate.text = dateText()
+            cTime.text = String.format(Locale.US, "%02d:%02d", hh, mi)
+            listOf(cDate, cTime).forEachIndexed { n, ch ->
+                val on = panel == n + 1
+                ch.setTextColor(if (on) c else TEXT)
+                ch.background = box(if (on) BG else KEY, if (on) c else 0)
+            }
+        }
+
+        fun close() {
+            if (panel == 0) return
+            panel = 0
+            body.visibility = View.GONE
+            body.removeAllViews()
+            look()
+        }
+
+        fun pickDay(t: Long) {
+            day = t
+            touched = true
+            close()
+            onOpen(false)
+        }
+
+        fun buildCalendar() {
+            body.removeAllViews()
+            val c = accent()
+            val nowC = Calendar.getInstance()
+            val nowKey = nowC.get(Calendar.YEAR) * 12 + nowC.get(Calendar.MONTH)
+            val key = mon.get(Calendar.YEAR) * 12 + mon.get(Calendar.MONTH)
+
+            // header:  <  October 2026  >
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            fun arrow(rot: Float, d: Int, ok: Boolean): View {
+                val b = FrameLayout(this)
+                b.addView(chev(SUB, rot), FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER))
+                if (ok) {
+                    b.setOnClickListener { mon.add(Calendar.MONTH, d); buildCalendar() }
+                    pressFx(b, 0.88f)
+                } else {
+                    b.alpha = 0.25f
+                }
+                return b
+            }
+            head.addView(arrow(90f, -1, true), lp(dp(40), dp(36)))
+            head.addView(
+                tv(SimpleDateFormat("MMMM yyyy", loc()).format(mon.time), 14f, TEXT, true, true)
+                    .apply { gravity = Gravity.CENTER },
+                lp(0, WRAP, 1f)
+            )
+            head.addView(arrow(-90f, 1, key < nowKey), lp(dp(40), dp(36)))
+            body.addView(head, lp(MATCH, WRAP))
+
+            // weekday letters (week starts on Monday)
+            val wd = if (lang == "tr") arrayOf("Pt", "Sa", "Ça", "Pe", "Cu", "Ct", "Pz")
+            else arrayOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+            val wr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (w in wd) wr.addView(tv(w, 11f, SUB, false, true).apply { gravity = Gravity.CENTER }, lp(0, dp(26), 1f))
+            body.addView(wr, lp(MATCH, WRAP))
+
+            // days (future days can't be picked)
+            val first = (mon.get(Calendar.DAY_OF_WEEK) + 5) % 7
+            val dim = mon.getActualMaximum(Calendar.DAY_OF_MONTH)
+            val cc = Calendar.getInstance()
+            var d = 1 - first
+            while (d <= dim) {
+                val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for (i in 0 until 7) {
+                    val holder = FrameLayout(this)
+                    if (d in 1..dim) {
+                        cc.timeInMillis = mon.timeInMillis
+                        cc.add(Calendar.DAY_OF_MONTH, d - 1)
+                        val t = dayStart(cc.timeInMillis)
+                        val on = t == day
+                        val future = t > today
+                        val cell = tv(d.toString(), 14f, if (on) BG else if (future) BORDER else TEXT, on, true).apply {
+                            gravity = Gravity.CENTER
+                            if (on) {
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(c)
+                                }
+                            } else if (t == today) {
+                                background = GradientDrawable().apply {
+                                    shape = GradientDrawable.OVAL
+                                    setColor(0)
+                                    setStroke(dp(1), SUB)
+                                }
+                            }
+                        }
+                        if (!future) {
+                            holder.setOnClickListener { pickDay(t) }
+                            pressFx(holder, 0.9f)
+                        }
+                        holder.addView(cell, FrameLayout.LayoutParams(dp(34), dp(34), Gravity.CENTER))
+                    }
+                    line.addView(holder, lp(0, dp(38), 1f))
+                    d++
+                }
+                body.addView(line, lp(MATCH, WRAP))
+            }
+        }
+
+        fun buildTime() {
+            body.removeAllViews()
+            val c = accent()
+            val ih = dp(40)
+            val host = FrameLayout(this)
+            host.addView(
+                View(this).apply { background = box(KEY) },
+                FrameLayout.LayoutParams(MATCH, ih, Gravity.CENTER_VERTICAL).apply { setMargins(dp(40), 0, dp(40), 0) }
+            )
+            val wr = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            wr.addView(wheel(24, hh, c) { hh = it; touched = true; look() }, lp(dp(72), 3 * ih))
+            wr.addView(tv(":", 22f, TEXT, true, true).apply { gravity = Gravity.CENTER }, lp(dp(16), 3 * ih))
+            wr.addView(wheel(60, mi, c) { mi = it; touched = true; look() }, lp(dp(72), 3 * ih))
+            host.addView(wr, FrameLayout.LayoutParams(MATCH, 3 * ih))
+            body.addView(host, lp(MATCH, WRAP))
+            val done = tv("Done", 14f, BG, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(28), dp(10), dp(28), dp(10))
+                background = tap(c)
+                setOnClickListener { close(); onOpen(false) }
+            }
+            pressFx(done, 0.96f)
+            body.addView(done, lp(WRAP, WRAP).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, dp(8), 0, 0) })
+        }
+
+        fun show(p: Int) {
+            val was = panel
+            panel = p
+            body.visibility = View.VISIBLE
+            if (p == 1) {
+                mon.timeInMillis = day
+                mon.set(Calendar.DAY_OF_MONTH, 1)
+                buildCalendar()
+            } else {
+                buildTime()
+            }
+            look()
+            if (was == 0) onOpen(true)
+        }
+
+        fun restyle() {
+            look()
+            if (panel == 1) buildCalendar() else if (panel == 2) buildTime()
+        }
+
+        cDate.setOnClickListener { if (panel == 1) { close(); onOpen(false) } else show(1) }
+        cTime.setOnClickListener { if (panel == 2) { close(); onOpen(false) } else show(2) }
+        look()
+
+        return DateField(
+            col,
+            {
+                if (!touched) {
+                    System.currentTimeMillis()
+                } else {
+                    val now = Calendar.getInstance()
+                    val c = Calendar.getInstance()
+                    c.timeInMillis = day
+                    c.set(Calendar.HOUR_OF_DAY, hh)
+                    c.set(Calendar.MINUTE, mi)
+                    c.set(Calendar.SECOND, now.get(Calendar.SECOND))
+                    c.set(Calendar.MILLISECOND, now.get(Calendar.MILLISECOND))
+                    Math.min(c.timeInMillis, System.currentTimeMillis())   // never in the future
+                }
+            },
+            { restyle() },
+            { close() }
+        )
+    }
+
     // ---------- quick add: Income / Expense / Transfer ----------
     // One sheet for all three kinds. The number pad is open from the first frame and the account is already
     // the active one, so the usual entry is: type the amount -> Save. Kind, category, account and note are optional extras.
@@ -2607,6 +2915,10 @@ class MainActivity : Activity() {
             seg.addView(t, lp(0, WRAP, 1f))
         }
         sh.addView(seg, lp(MATCH, WRAP))
+
+        // date + time, right above the amount (the field itself is created further down, once showPad / toAmount exist)
+        val dateHost = LinearLayout(this)
+        sh.addView(dateHost, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
 
         // amount
         val amtBox = LinearLayout(this).apply {
@@ -2788,6 +3100,12 @@ class MainActivity : Activity() {
             showPad(true)
         }
 
+        // date + time: while a panel (calendar / time wheels) is open the number pad steps aside
+        val dateF = dateField(System.currentTimeMillis(), { kc(kind) }) { opened ->
+            if (opened) { hideKb(); sh.requestFocus(); showPad(false) } else toAmount()
+        }
+        dateHost.addView(dateF.view)
+
         fun styleChips(chips: List<TextView>, sel: Int, c: Int) {
             chips.forEachIndexed { n, chip ->
                 val on = accs[n].id == sel
@@ -2920,6 +3238,7 @@ class MainActivity : Activity() {
             styleChips(chipsTo, acc2, c)
             saveBtn.background = tap(c)
             catOk.background = tap(c)
+            dateF.restyle()
             frames()
             amount()
         }
@@ -2977,7 +3296,7 @@ class MainActivity : Activity() {
             key.setOnClickListener { press(buf, k); amount() }
             if (k == "←") key.setOnLongClickListener { buf.setLength(0); amount(); true }
         }
-        noteEt.setOnFocusChangeListener { _, has -> if (has) showPad(false) else frames() }
+        noteEt.setOnFocusChangeListener { _, has -> if (has) { dateF.close(); showPad(false) } else frames() }
         noteEt.setOnEditorActionListener { _, _, _ -> toAmount(); true }
         catInput.setOnFocusChangeListener { _, has -> if (has) showPad(false) else frames() }
         catInput.setOnEditorActionListener { _, _, _ -> commitCat(); true }
@@ -2992,7 +3311,7 @@ class MainActivity : Activity() {
             closeCatEdit()
             fillCats()
         }
-        amtBox.setOnClickListener { toAmount() }
+        amtBox.setOnClickListener { dateF.close(); toAmount() }
 
         saveBtn.setOnClickListener {
             if (catEdit.visibility == View.VISIBLE) commitCat()      // a category typed but not added yet still counts
@@ -3004,11 +3323,12 @@ class MainActivity : Activity() {
             }
             val note = noteEt.text.toString().trim()
             val picked = cat
+            val whenMs = dateF.time()
             closeSheet()
             when (kind) {
-                0 -> addTx(note, v, acc1, -1, picked)
-                1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked)
-                else -> addTx(note, v, acc1, acc2)
+                0 -> addTx(note, v, acc1, -1, picked, whenMs)
+                1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked, whenMs)
+                else -> addTx(note, v, acc1, acc2, "", whenMs)
             }
             buzz()
             render()
