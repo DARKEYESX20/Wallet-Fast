@@ -1366,7 +1366,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         col.addView(tv("Total Balance", 15f, SUB))
-        col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, false).apply { letterSpacing = -0.03f })
+        col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, true).apply { letterSpacing = -0.03f })
         topRow(root, col, false)
         if (edit) root.addView(tv(hint, 12f, SUB).apply { setPadding(dp(2), dp(6), 0, 0) })
     }
@@ -2050,7 +2050,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         col.addView(tv("Wallet Fast", 15f, SUB))
-        col.addView(tv("Settings", 46f, TEXT, false).apply { letterSpacing = -0.03f })
+        col.addView(tv("Settings", 46f, TEXT, true).apply { letterSpacing = -0.03f })
         topRow(root, col, true)
 
         // edit mode (reorder / rename / delete) is entered from here
