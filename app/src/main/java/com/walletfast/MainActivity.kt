@@ -60,7 +60,8 @@ class MainActivity : Activity() {
         var name: String,
         var open: Double,
         var color: Int = 0,        // 0 = default card look
-        var img: String? = null    // file name inside filesDir/tpl
+        var img: String? = null,   // file name inside filesDir/tpl
+        var tplOnly: Boolean = false   // true = only templates can use it (hidden from Income / Expense / Transfer lists)
     )
 
     private class Tpl(
@@ -221,6 +222,9 @@ class MainActivity : Activity() {
         "Today" to "Bugün",
         "Yesterday" to "Dün",
         "Edit Transaction" to "İşlemi Düzenle",
+        "Template only" to "Sadece şablon",
+        "Hidden from the Income, Expense and Transfer lists" to "Gelir, Gider ve Transfer listelerinde görünmez",
+        "Template only account" to "Sadece şablon hesabı",
         "+ New" to "+ Yeni",
         "Add" to "Ekle",
         "Groceries" to "Market",
@@ -456,7 +460,8 @@ class MainActivity : Activity() {
                     x.getString("n"),
                     x.getDouble("o"),
                     x.optInt("col", 0),
-                    x.optString("img", "").ifEmpty { null }
+                    x.optString("img", "").ifEmpty { null },
+                    x.optBoolean("tpo", false)
                 )
             )
         }
@@ -467,6 +472,8 @@ class MainActivity : Activity() {
             if (!ids.add(ac.id)) throw IllegalArgumentException("duplicate account id")
             if (ac.id > top) top = ac.id
         }
+        // at least one normal account must exist (quick add and the active account need it)
+        if (list.all { it.tplOnly }) list[0].tplOnly = false
         val tl = ArrayList<Tpl>()
         val t = o.getJSONArray("tpls")
         for (i in 0 until t.length()) {
@@ -496,7 +503,7 @@ class MainActivity : Activity() {
             }
         }
         var act = o.optInt("active", 0)
-        if (act !in ids) act = list[0].id
+        if (act !in ids || list.any { it.id == act && it.tplOnly }) act = (list.firstOrNull { !it.tplOnly } ?: list[0]).id
         return Cfg(
             list, tl, act,
             Math.max(o.optInt("nid", 0), top + 1),
@@ -523,7 +530,7 @@ class MainActivity : Activity() {
         accs.forEach {
             a.put(
                 JSONObject().put("id", it.id).put("n", it.name).put("o", it.open)
-                    .put("col", it.color).put("img", it.img ?: "")
+                    .put("col", it.color).put("img", it.img ?: "").put("tpo", it.tplOnly)
             )
         }
         val t = JSONArray()
@@ -725,8 +732,11 @@ class MainActivity : Activity() {
         }
     }
 
+    // the last normal (not template-only) account can't be deleted
+    private fun canDelete(a: Acc): Boolean = accs.size > 1 && (a.tplOnly || accs.any { it !== a && !it.tplOnly })
+
     private fun deleteAccount(a: Acc) {
-        if (accs.size <= 1) return
+        if (!canDelete(a)) return
         if (!purgeAccountTx(a.id)) {
             snack("Couldn't delete account")
             return
@@ -1599,16 +1609,20 @@ class MainActivity : Activity() {
             })
             cell(item)
         }
+        // slim full-width bar so it takes little space
         val add = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(36), dp(8), dp(36))
+            setPadding(dp(8), dp(11), dp(8), dp(11))
             background = tap(BG, BORDER)
             setOnClickListener { openTplEditor(-1) }
         }
-        pressFx(add, 0.96f)
-        add.addView(tv("+ New Template", 17f, SUB, true).apply { gravity = Gravity.CENTER })
-        cell(add)
+        pressFx(add, 0.98f)
+        add.addView(tv("+ New Template", 14f, SUB, true).apply { gravity = Gravity.CENTER })
+        val ap = GridLayout.LayoutParams(GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(GridLayout.UNDEFINED, 2, 1f))
+        ap.width = 0
+        ap.setMargins(dp(4), dp(4), dp(4), dp(4))
+        grid.addView(add, ap)
         root.addView(grid)
 
         buildHistory(root)
@@ -1865,6 +1879,7 @@ class MainActivity : Activity() {
         val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         l.addView(tv(a.name, 16f, lk.tc, true, user = true))
         if (sel) l.addView(tv("Active", 12f, accent))
+        else if (a.tplOnly) l.addView(tv("Template only", 12f, lk.sub))
         r.addView(l, lp(0, WRAP, 1f))
         val bc = if (bal < 0) (if (lk.light) 0xFFC62828.toInt() else DANGER) else lk.tc
         r.addView(tv(fmt(bal), balSize, bc, true))
@@ -1885,16 +1900,20 @@ class MainActivity : Activity() {
         accs.forEachIndexed { idx, a ->
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
             r.setOnClickListener {
-                active = a.id
-                saveCfg()
-                render()
+                if (a.tplOnly) {
+                    snack("Template only account")   // can't be the active account
+                } else {
+                    active = a.id
+                    saveCfg()
+                    render()
+                }
             }
             val item: View = if (edit) {
                 r.isClickable = false
                 val h = FrameLayout(this)
                 h.addView(r, FrameLayout.LayoutParams(MATCH, WRAP))
-                // the last remaining account can't be deleted, so it gets no cross
-                if (accs.size > 1) {
+                // the last normal account can't be deleted, so it gets no cross
+                if (canDelete(a)) {
                     h.addView(
                         delBadge { requestDeleteAccount(a) },
                         FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END)
@@ -2900,10 +2919,13 @@ class MainActivity : Activity() {
         val f = frame ?: return
         if (sheet != null) return
 
+        // accounts offered here: template-only ones are left out (unless the entry being edited already uses one)
+        val qa = accs.filter { !it.tplOnly || (ed != null && (it.id == ed.acc || it.id == ed.to)) }
+
         var kind = startKind                                      // 0 = Income, 1 = Expense, 2 = Transfer
         val buf = StringBuilder(if (ed == null) "" else raw(Math.abs(ed.amt)))
         var acc1 = ed?.acc ?: active                                         // Income / Expense: the account. Transfer: "from"
-        var acc2 = if (ed != null && ed.to >= 0) ed.to else (accs.firstOrNull { it.id != acc1 }?.id ?: -1)   // Transfer: "to"
+        var acc2 = if (ed != null && ed.to >= 0) ed.to else (qa.firstOrNull { it.id != acc1 }?.id ?: -1)   // Transfer: "to"
         var padOn = true                                          // true = number pad, false = Android keyboard
         var cat = if (ed != null && ed.cat.isNotEmpty() && catName(ed.cat) != null) ed.cat else ""                                              // chosen category id ("" = none)
         var editing: Cat? = null                                  // own category being renamed / deleted (null = making a new one)
@@ -3023,7 +3045,7 @@ class MainActivity : Activity() {
 
         // account: Income / Expense = all chips visible (max 2 rows), Transfer = From / To rows (scroll sideways)
         val chipsAcc = ArrayList<TextView>()
-        for (a in accs) chipsAcc.add(chipView(a.name, true))
+        for (a in qa) chipsAcc.add(chipView(a.name, true))
         val accView = accRowsView(chipsAcc, avail)
         val hsAcc = accView as? HorizontalScrollView
         val rowAcc = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -3041,7 +3063,7 @@ class MainActivity : Activity() {
             }
             row.addView(rowLabel(label, 0), lp(dp(60), WRAP))
             val inner = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (a in accs) {
+            for (a in qa) {
                 val chip = chipView(a.name, true)
                 chips.add(chip)
                 inner.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
@@ -3153,7 +3175,7 @@ class MainActivity : Activity() {
 
         fun styleChips(chips: List<TextView>, sel: Int, c: Int) {
             chips.forEachIndexed { n, chip ->
-                val on = accs[n].id == sel
+                val on = qa[n].id == sel
                 chip.setTextColor(if (on) c else SUB)
                 chip.background = box(if (on) BG else KEY, if (on) c else 0)
             }
@@ -3265,9 +3287,9 @@ class MainActivity : Activity() {
         // everything that depends on the kind or on the chosen accounts
         fun paint() {
             val c = kc(kind)
-            val two = accs.size >= 2
+            val two = qa.size >= 2
             if (kind == 2 && two && (acc2 == acc1 || accOf(acc2) == null)) {
-                acc2 = accs.firstOrNull { it.id != acc1 }?.id ?: -1
+                acc2 = qa.firstOrNull { it.id != acc1 }?.id ?: -1
             }
             segs.forEachIndexed { k, t ->
                 t.setTextColor(if (k == kind) BG else SUB)
@@ -3291,7 +3313,7 @@ class MainActivity : Activity() {
         // scroll a sideways-scrolling chip row so the selected account is visible
         fun reveal(hs: HorizontalScrollView?, chips: List<TextView>, sel: Int) {
             val h = hs ?: return
-            val n = accs.indexOfFirst { it.id == sel }
+            val n = qa.indexOfFirst { it.id == sel }
             if (n < 0) return
             h.post { h.scrollTo(Math.max(0, chips[n].left - dp(40)), 0) }
         }
@@ -3319,11 +3341,11 @@ class MainActivity : Activity() {
             }
         }
         chipsAcc.forEachIndexed { n, chip ->
-            chip.setOnClickListener { acc1 = accs[n].id; paint() }
+            chip.setOnClickListener { acc1 = qa[n].id; paint() }
         }
         chipsFrom.forEachIndexed { n, chip ->
             chip.setOnClickListener {
-                val id = accs[n].id
+                val id = qa[n].id
                 if (id == acc2) acc2 = acc1          // picking the "to" account as "from" swaps them
                 acc1 = id
                 paint()
@@ -3331,7 +3353,7 @@ class MainActivity : Activity() {
         }
         chipsTo.forEachIndexed { n, chip ->
             chip.setOnClickListener {
-                val id = accs[n].id
+                val id = qa[n].id
                 if (id == acc1) acc1 = acc2          // picking the "from" account as "to" swaps them
                 acc2 = id
                 paint()
@@ -3361,7 +3383,7 @@ class MainActivity : Activity() {
         saveBtn.setOnClickListener {
             if (catEdit.visibility == View.VISIBLE) commitCat()      // a category typed but not added yet still counts
             val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)        // 0 is allowed on purpose
-            if (kind == 2 && (accs.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
+            if (kind == 2 && (qa.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
                 err.text = s("Transfer needs two accounts")
                 err.visibility = View.VISIBLE
                 return@setOnClickListener
@@ -3438,7 +3460,7 @@ class MainActivity : Activity() {
         sh.addView(tv("Select Account", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(8)) })
 
         val bals = balMap()
-        for (a in accs) {
+        for (a in accs.filter { !it.tplOnly }) {
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, BG, dp(64), 10, 17f, false)
             r.setOnClickListener {
                 active = a.id
@@ -3515,6 +3537,7 @@ class MainActivity : Activity() {
         val cur = balOf(a)
         val st = Style(a.color, a.img)
         val origImg = a.img
+        val tpo = booleanArrayOf(a.tplOnly)
         openEditor(
             title = "Edit Account",
             nameHint = "Account name",
@@ -3527,11 +3550,15 @@ class MainActivity : Activity() {
             requireName = false,
             requireAmount = false,
             // the last remaining account can't be deleted
-            onDelete = if (accs.size > 1) ({ requestDeleteAccount(a) }) else null,
-            style = st
+            onDelete = if (canDelete(a)) ({ requestDeleteAccount(a) }) else null,
+            style = st,
+            // the switch is hidden for the last normal account (it can't become template-only)
+            tplOnlyRef = if (a.tplOnly || accs.any { it !== a && !it.tplOnly }) tpo else null
         ) { nm, v, _ ->
             if (nm.isNotEmpty()) a.name = nm
             a.open = v - (cur - a.open)
+            a.tplOnly = tpo[0]
+            if (a.tplOnly && active == a.id) active = accs.first { !it.tplOnly }.id
             // old photo is no longer used -> free the file
             if (origImg != null && origImg != st.img) deleteImg(origImg)
             a.color = st.color
@@ -3543,6 +3570,7 @@ class MainActivity : Activity() {
 
     private fun openNewAccount() {
         val st = Style(0, null)
+        val tpo = booleanArrayOf(false)
         openEditor(
             title = "New Account",
             nameHint = "Account name",
@@ -3556,10 +3584,11 @@ class MainActivity : Activity() {
             requireAmount = false,
             onDelete = null,
             style = st,
-            defaultNeg = false
+            defaultNeg = false,
+            tplOnlyRef = tpo
         ) { nm, v, _ ->
             val id = nid++
-            accs.add(Acc(id, if (nm.isEmpty()) newAccName() else nm, v, st.color, st.img))
+            accs.add(Acc(id, if (nm.isEmpty()) newAccName() else nm, v, st.color, st.img, tpo[0]))
             saveCfg()
             render()
         }
@@ -3657,6 +3686,7 @@ class MainActivity : Activity() {
         accSel: Int? = null,
         style: Style? = null,
         defaultNeg: Boolean = true,
+        tplOnlyRef: BooleanArray? = null,
         onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
@@ -3849,6 +3879,22 @@ class MainActivity : Activity() {
             }
             pressFx(imgBtn, 0.96f)
             styleLook()
+        }
+
+        // account only: "Template only" switch
+        if (tplOnlyRef != null) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(10), dp(12), dp(10))
+                background = box(BG, BORDER)
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(tv("Template only", 14f, TEXT, true))
+            col.addView(tv("Hidden from the Income, Expense and Transfer lists", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
+            row.addView(col, lp(0, WRAP, 1f))
+            row.addView(toggle(tplOnlyRef[0], { tplOnlyRef[0] = it }), lp(dp(50), dp(28)))
+            sh.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
         }
 
         val err = tv("", 12f, DANGER).apply {
