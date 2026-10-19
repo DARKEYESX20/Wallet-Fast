@@ -116,15 +116,16 @@ class MainActivity : Activity() {
         override fun getOpacity(): Int = PixelFormat.OPAQUE
     }
 
-    private val BG = 0xFF121613.toInt()
-    private val CARD = 0xFF1A201D.toInt()
-    private val KEY = 0xFF252D28.toInt()
-    private val TEXT = 0xFFEEF1EE.toInt()
-    private val SUB = 0xFF93A196.toInt()
-    private val ACCENT = 0xFF3DDB9D.toInt()
-    private val DANGER = 0xFFFF6B52.toInt()
-    private val BORDER = 0xFF2A322D.toInt()
-    private val PILL = 0x2E3DDB9D          // ACCENT at ~18% opacity (subtle nav pill)
+    private val BG = 0xFF070708.toInt()
+    private val CARD = 0xFF131315.toInt()
+    private val KEY = 0xFF1D1D20.toInt()
+    private val TEXT = 0xFFF5F5F7.toInt()
+    private val SUB = 0xFF8C8C93.toInt()
+    private val ACCENT = 0xFF4ADE80.toInt()
+    private val DANGER = 0xFFFF5A5F.toInt()
+    private val BORDER = 0xFF27272B.toInt()   // artık kartlarda çizgi olarak çizilmiyor (box'a bak)
+    private val GHOST = 0xFF2E2E33.toInt()    // sadece "+ New" butonlarının ince çizgisi
+    private val PILL = 0x2E4ADE80          // ACCENT at ~18% opacity (subtle nav pill)
     private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
@@ -142,7 +143,7 @@ class MainActivity : Activity() {
     )
     private val WHITE = 0xFFFFFFFF.toInt()
     private val WHITE_SUB = 0xCCFFFFFF.toInt()
-    private val MENU_ICON = 0xFF8A958D.toInt()   // settings icon, drawn at 80% opacity
+    private val MENU_ICON = 0xFF8C8C93.toInt()   // settings icon, drawn at 80% opacity
 
     // animation: very short and subtle, GPU-friendly property animations only
     private val DUR = 120L
@@ -890,18 +891,32 @@ class MainActivity : Activity() {
 
     private fun box(fill: Int, stroke: Int = 0) = GradientDrawable().apply {
         setColor(fill)
-        cornerRadius = dp(14).toFloat()
-        if (stroke != 0) setStroke(dp(2), stroke)
+        cornerRadius = dp(18).toFloat()
+        if (stroke != 0 && stroke != BORDER) setStroke(dp(2), stroke)
+    }
+
+    private fun section(text: String) = tv(text, 11f, SUB, true).apply {
+        this.text = this.text.toString().uppercase(loc())
+        letterSpacing = 0.14f
+        setPadding(dp(2), dp(22), 0, dp(8))
     }
 
     private fun tap(fill: Int, stroke: Int = 0): Drawable =
         RippleDrawable(ColorStateList.valueOf(0x26FFFFFF), box(fill, stroke), null)
 
+    // varsayılan şablon kartı: çizgisiz, üstten alta çok hafif gradient
+    private fun glass(): Drawable = RippleDrawable(
+        ColorStateList.valueOf(0x26FFFFFF),
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF1B1B1E.toInt(), 0xFF111113.toInt()))
+            .apply { cornerRadius = dp(18).toFloat() },
+        null
+    )
+
     // card with a photo: cropped image + dark scrim so the text stays readable
     private fun imgBg(b: Bitmap, stroke: Int = 0): Drawable {
         val scrim = GradientDrawable().apply {
             setColor(0x8C000000.toInt())
-            cornerRadius = dp(14).toFloat()
+            cornerRadius = dp(18).toFloat()
             if (stroke != 0) setStroke(dp(2), stroke)
         }
         return RippleDrawable(
@@ -931,7 +946,7 @@ class MainActivity : Activity() {
 
     private val roundOutline = object : ViewOutlineProvider() {
         override fun getOutline(view: View, outline: Outline) {
-            outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
+            outline.setRoundRect(0, 0, view.width, view.height, dp(18).toFloat())
         }
     }
 
@@ -1127,7 +1142,7 @@ class MainActivity : Activity() {
 
     private fun page() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(14), dp(12), dp(14), dp(44))
+        setPadding(dp(18), dp(14), dp(18), dp(48))
     }
 
     // custom on/off switch (knob slides, track color fades)
@@ -1351,7 +1366,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         col.addView(tv("Total Balance", 15f, SUB))
-        col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, true))
+        col.addView(tv(fmt(total), 46f, if (total < 0) DANGER else TEXT, false).apply { letterSpacing = -0.03f })
         topRow(root, col, false)
         if (edit) root.addView(tv(hint, 12f, SUB).apply { setPadding(dp(2), dp(6), 0, 0) })
     }
@@ -1518,7 +1533,7 @@ class MainActivity : Activity() {
         root.addView(ac, lp(MATCH, WRAP).apply { setMargins(0, dp(14), 0, 0) })
 
         // templates
-        root.addView(tv("Templates", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
+        root.addView(section("Templates"))
         val grid = GridLayout(this).apply { columnCount = 2 }
         fun cell(v: View) {
             val p = GridLayout.LayoutParams(GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(GridLayout.UNDEFINED, 1f))
@@ -1539,7 +1554,7 @@ class MainActivity : Activity() {
                 background = when {
                     bmp != null -> imgBg(bmp)
                     t.color != 0 -> tap(t.color)
-                    else -> tap(CARD, BORDER)
+                    else -> glass()
                 }
                 if (bmp != null) {
                     clipToOutline = true
@@ -1598,7 +1613,7 @@ class MainActivity : Activity() {
                 }
                 c
             }
-            c.addView(tv(t.label, 23f, tc, true, user = true).apply { gravity = Gravity.CENTER })
+            c.addView(tv(t.label, 20f, tc, true, user = true).apply { gravity = Gravity.CENTER })
             val amtCol = when {
                 t.ask != 0 -> if (light) (if (t.ask == 1) 0xFFC62828.toInt() else 0xFF0B7A55.toInt()) else if (t.ask == 1) DANGER else ACCENT
                 t.amt == 0.0 -> if (light) 0xAA121613.toInt() else if (styled) WHITE_SUB else SUB   // dimmer than the name
@@ -1606,7 +1621,7 @@ class MainActivity : Activity() {
                 t.amt < 0 -> DANGER
                 else -> ACCENT
             }
-            c.addView(tv(if (t.ask == 1) "-₺?" else if (t.ask == 2) "+₺?" else sgn(t.amt), 21f, amtCol, true).apply {
+            c.addView(tv(if (t.ask == 1) "-₺?" else if (t.ask == 2) "+₺?" else sgn(t.amt), 18f, amtCol, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(4), 0, 0)
             })
@@ -1622,7 +1637,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(11), dp(8), dp(11))
-            background = tap(BG, BORDER)
+            background = tap(BG, GHOST)
             setOnClickListener { openTplEditor(-1) }
         }
         pressFx(add, 0.98f)
@@ -1756,7 +1771,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildHistory(root: LinearLayout) {
-        root.addView(tv("Recent Activity", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
+        root.addView(section("Recent Activity"))
         if (txs.isEmpty()) {
             root.addView(tv("No transactions yet", 14f, SUB))
             newTxId = null
@@ -1903,7 +1918,7 @@ class MainActivity : Activity() {
             "Tap an account to rename it, set its balance, change its look or delete it · hold and drag to reorder"
         )
 
-        root.addView(tv("Accounts", 13f, SUB, true).apply { setPadding(dp(2), dp(18), 0, dp(6)) })
+        root.addView(section("Accounts"))
         val rows = ArrayList<View>()
         accs.forEachIndexed { idx, a ->
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
@@ -1955,7 +1970,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             minimumHeight = dp(68)
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            background = tap(BG, BORDER)
+            background = tap(BG, GHOST)
             setOnClickListener { openNewAccount() }
         }
         pressFx(add, 0.98f)
@@ -2014,7 +2029,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(8), 0, dp(8))
         }
         col.addView(tv("Wallet Fast", 15f, SUB))
-        col.addView(tv("Settings", 46f, TEXT, true))
+        col.addView(tv("Settings", 46f, TEXT, false).apply { letterSpacing = -0.03f })
         topRow(root, col, true)
 
         // edit mode (reorder / rename / delete) is entered from here
@@ -2305,8 +2320,8 @@ class MainActivity : Activity() {
     }
 
     // ---------- + button and quick add menu ----------
-    private val PURPLE = 0xFF9A86FF.toInt()
-    private val FAB_OPEN = 0xFFD3DAD5.toInt()      // the + turns light gray (×) while the menu is open
+    private val PURPLE = 0xFFA78BFA.toInt()
+    private val FAB_OPEN = 0xFFE4E4E7.toInt()      // the + turns light gray (×) while the menu is open
     private val pop = OvershootInterpolator(1.1f)
     private var fab: View? = null
     private var fabBg: GradientDrawable? = null
@@ -2438,7 +2453,7 @@ class MainActivity : Activity() {
         if (sheet != null) return
 
         val scrim = FrameLayout(this).apply {
-            setBackgroundColor(0xD9121613.toInt())
+            setBackgroundColor(0xE6070708.toInt())
             alpha = 0f
             setOnClickListener { closeAddMenu() }
         }
