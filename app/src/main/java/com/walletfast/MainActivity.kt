@@ -386,7 +386,8 @@ class MainActivity : Activity() {
         "transaction" to "işlem",
         "month" to "ay",
         "account" to "hesap",
-        "template" to "şablon"
+        "template" to "şablon",
+        "Options" to "Seçenekler",
     )
 
     private fun s(en: String): String = if (lang == "tr") (TR[en] ?: en) else en
@@ -4289,6 +4290,61 @@ class MainActivity : Activity() {
         f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
         over = scrim
     }
+    // small sheet above the template editor: template options (for now only "Ask amount on tap")
+    private fun openOptionsOver(askRef: BooleanArray, onChange: () -> Unit) {
+        val f = frame ?: return
+        if (over != null) return
+        hideKb()
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeOver() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+        sh.addView(tv("Options", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(10)) })
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(12), dp(12))
+            background = box(BG, BORDER)
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(tv("Ask amount on tap", 14f, TEXT, true))
+        col.addView(tv("Type the price every time, e.g. coffee or cigarettes", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
+        row.addView(col, lp(0, WRAP, 1f))
+        row.addView(toggle(askRef[0]) { askRef[0] = it; onChange() }, lp(dp(50), dp(28)))
+        sh.addView(row, lp(MATCH, WRAP))
+
+        val done = tv("Done", 16f, BG, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(ACCENT)
+            setOnClickListener { closeOver() }
+        }
+        pressFx(done, 0.97f)
+        sh.addView(done, lp(MATCH, dp(52)).apply { setMargins(0, dp(14), 0, 0) })
+
+        scrim.addView(sh, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        over = scrim
+
+        scrim.alpha = 0f
+        sh.translationY = dp(40).toFloat()
+        scrim.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
+        sh.animate().translationY(0f).setDuration(DUR + 60L).setInterpolator(ease).start()
+    }
 
     private fun closeSheet() {
         closeOver()
@@ -4617,23 +4673,20 @@ class MainActivity : Activity() {
             styleLook()
         }
 
-        // template only: "Ask amount on tap" switch (special template)
+        // templates only: "Options" button in the header (left of Delete). It holds the "Ask amount on tap" switch.
         if (askRef != null) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(12), dp(10))
-                background = box(BG, BORDER)
+            val optBtn = tv("Options", 14f, SUB, true).apply {
+                setPadding(dp(12), dp(8), dp(4), dp(8))
             }
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            col.addView(tv("Ask amount on tap", 14f, TEXT, true))
-            col.addView(tv("Type the price every time, e.g. coffee or cigarettes", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
-            row.addView(col, lp(0, WRAP, 1f))
-            row.addView(toggle(askRef[0], {
-                askRef[0] = it
-                amtLabelTv.text = s(if (it) "Default amount (optional)" else amountLabel)
-            }), lp(dp(50), dp(28)))
-            sh.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
+            fun paintOpt() { optBtn.setTextColor(if (askRef[0]) ACCENT else SUB) }
+            optBtn.setOnClickListener {
+                openOptionsOver(askRef) {
+                    amtLabelTv.text = s(if (askRef[0]) "Default amount (optional)" else amountLabel)
+                    paintOpt()
+                }
+            }
+            paintOpt()
+            head.addView(optBtn, 1)    // title is child 0, so this lands right before Delete
         }
 
         // account only: "Template only" switch
