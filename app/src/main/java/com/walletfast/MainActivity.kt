@@ -50,6 +50,10 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import android.graphics.BitmapShader
+import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Shader
 
 
 class MainActivity : Activity() {
@@ -117,6 +121,76 @@ class MainActivity : Activity() {
         override fun getOpacity(): Int = PixelFormat.OPAQUE
     }
 
+    // dithered gradient: 8-bit renkte oluşan bant çizgilerini noise ile dağıtır, köşeler yuvarlak
+    private class SmoothDrawable(private val top: Int, private val bottom: Int, private val radius: Float) : Drawable() {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val rect = RectF()
+
+        override fun onBoundsChange(b: Rect) {
+            val w = b.width()
+            val h = b.height()
+            if (w <= 0 || h <= 0) { p.shader = null; return }
+            p.shader = BitmapShader(make(top, bottom, w, h), Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            rect.set(0f, 0f, w.toFloat(), h.toFloat())
+            invalidateSelf()
+        }
+
+        override fun draw(c: Canvas) {
+            if (p.shader == null) return
+            c.save()
+            c.translate(bounds.left.toFloat(), bounds.top.toFloat())
+            c.drawRoundRect(rect, radius, radius, p)
+            c.restore()
+        }
+
+        override fun setAlpha(a: Int) { p.alpha = a; invalidateSelf() }
+        override fun setColorFilter(cf: ColorFilter?) { p.colorFilter = cf; invalidateSelf() }
+
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        companion object {
+            private val cache = HashMap<String, Bitmap>()
+            // üçgen dağılımlı noise (-1..1 seviye): standart TPDF dither
+            private val noise = FloatArray(128 * 128).also {
+                val r = java.util.Random(7)
+                for (i in it.indices) it[i] = r.nextFloat() + r.nextFloat() - 1f
+            }
+
+            fun make(top: Int, bottom: Int, w: Int, h: Int): Bitmap {
+                val key = "$top|$bottom|$w|$h"
+                cache[key]?.let { return it }
+                if (cache.size > 40) cache.clear()
+                val tr = ((top shr 16) and 0xFF).toFloat()
+                val tg = ((top shr 8) and 0xFF).toFloat()
+                val tb = (top and 0xFF).toFloat()
+                val dr = ((bottom shr 16) and 0xFF) - tr
+                val dg = ((bottom shr 8) and 0xFF) - tg
+                val db = (bottom and 0xFF) - tb
+                val ky = 0.85f / h      // ağırlıklı dikey, hafif çapraz: kart "cam" gibi durur
+                val kx = 0.15f / w
+                val px = IntArray(w * h)
+                for (y in 0 until h) {
+                    val ny = (y and 127) shl 7
+                    val ty = y * ky
+                    val o = y * w
+                    for (x in 0 until w) {
+                        val t = ty + x * kx
+                        val n = noise[ny or (x and 127)] + 0.5f
+                        val r = (tr + dr * t + n).toInt().coerceIn(0, 255)
+                        val g = (tg + dg * t + n).toInt().coerceIn(0, 255)
+                        val b = (tb + db * t + n).toInt().coerceIn(0, 255)
+                        px[o + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    }
+                }
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                bmp.setPixels(px, 0, w, 0, 0, w, h)
+                cache[key] = bmp
+                return bmp
+            }
+        }
+    }
+
     private val BG = 0xFF070708.toInt()
     private val CARD = 0xFF131315.toInt()
     private val KEY = 0xFF1D1D20.toInt()
@@ -131,16 +205,27 @@ class MainActivity : Activity() {
     private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
     // template / account color palette (white text stays readable on all of them)
-    private val PALETTE = intArrayOf(
+
+    // most commons
+    private val POPULAR = intArrayOf(
         0xFF4A90D9.toInt(), // light blue
-        0xFF2D5BA8.toInt(), // blue
         0xFF1B2A5C.toInt(), // navy
         0xFF7A3FA0.toInt(), // purple
         0xFFB5476B.toInt(), // pink
-        0xFFB98A1F.toInt(), // amber
         0xFF2A8C9A.toInt(), // teal
-        0xFF5A6670.toInt(), // slate
-        0xFF2E3237.toInt()  // dark gray (near black)
+        0xFF2E3237.toInt()  // dark gray
+    )
+
+    // (>) arrow: 3x8
+    private val MORE = intArrayOf(
+        0xFF3B6FE0.toInt(), 0xFF2D5BA8.toInt(), 0xFF1E3A8A.toInt(), 0xFF0369A1.toInt(),
+        0xFF0E7490.toInt(), 0xFF0F766E.toInt(), 0xFF047857.toInt(), 0xFF3F7D4E.toInt(),
+
+        0xFF5B8C2A.toInt(), 0xFFB98A1F.toInt(), 0xFFC2570C.toInt(), 0xFFC0392B.toInt(),
+        0xFF9F1239.toInt(), 0xFFBE185D.toInt(), 0xFF86198F.toInt(), 0xFF6D28D9.toInt(),
+
+        0xFF4C1D95.toInt(), 0xFF0B1F3A.toInt(), 0xFF5A6670.toInt(), 0xFF44403C.toInt(),
+        0xFF1F2937.toInt(), 0xFFE9E9EC.toInt(), 0xFFE8D9B5.toInt(), 0xFFBFE3D0.toInt()
     )
     private val WHITE = 0xFFFFFFFF.toInt()
     private val WHITE_SUB = 0xCCFFFFFF.toInt()
@@ -995,13 +1080,30 @@ class MainActivity : Activity() {
     private fun tap(fill: Int, stroke: Int = 0): Drawable =
         RippleDrawable(ColorStateList.valueOf(0x26FFFFFF), box(fill, stroke), null)
 
-    // varsayılan şablon kartı: çizgisiz, üstten alta çok hafif gradient
     private fun glass(): Drawable = RippleDrawable(
         ColorStateList.valueOf(0x26FFFFFF),
-        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF1B1B1E.toInt(), 0xFF111113.toInt()))
-            .apply { cornerRadius = dp(18).toFloat() },
-        null
+        SmoothDrawable(0xFF1B1B1E.toInt(), 0xFF111113.toInt(), dp(18).toFloat()),
+        box(WHITE)
     )
+
+    private fun shade(c: Int, f: Float): Int {
+        val t = if (f < 0f) 0 else 255
+        val k = Math.abs(f)
+        fun m(v: Int) = (v + (t - v) * k).toInt()
+        return (0xFF shl 24) or (m((c shr 16) and 0xFF) shl 16) or (m((c shr 8) and 0xFF) shl 8) or m(c and 0xFF)
+    }
+
+    private fun fancy(color: Int, stroke: Int = 0): Drawable {
+        val base: Drawable = SmoothDrawable(shade(color, 0.10f), shade(color, -0.16f), dp(18).toFloat())
+        val content: Drawable = if (stroke != 0 && stroke != BORDER) {
+            LayerDrawable(arrayOf(base, GradientDrawable().apply {
+                setColor(0)
+                cornerRadius = dp(18).toFloat()
+                setStroke(dp(2), stroke)
+            }))
+        } else base
+        return RippleDrawable(ColorStateList.valueOf(0x26FFFFFF), content, box(WHITE))
+    }
 
     // card with a photo: cropped image + dark scrim so the text stays readable
     private fun imgBg(b: Bitmap, stroke: Int = 0): Drawable {
@@ -1645,7 +1747,7 @@ class MainActivity : Activity() {
                 setPadding(dp(8), dp(36), dp(8), dp(36))
                 background = when {
                     bmp != null -> imgBg(bmp)
-                    t.color != 0 -> tap(t.color)
+                    t.color != 0 -> fancy(t.color)
                     else -> glass()
                 }
                 if (bmp != null) {
@@ -2004,7 +2106,7 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(vp), dp(16), dp(vp))
             background = when {
                 bmp != null -> imgBg(bmp, if (sel) ACCENT else 0)
-                a.color != 0 -> tap(a.color, if (sel) ACCENT else 0)
+                a.color != 0 -> fancy(a.color, if (sel) ACCENT else 0)
                 else -> tap(plain, if (sel) ACCENT else BORDER)
             }
             if (bmp != null) {
@@ -4392,51 +4494,118 @@ class MainActivity : Activity() {
 
         // look: card color or photo (templates and accounts). Color and photo exclude each other.
         if (style != null) {
-            sh.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
-            val swatches = ArrayList<TextView>()
+            val dots = ArrayList<Pair<Int, View>>()   // renk -> yuvarlak (0 = varsayılan)
+            val moreDots = ArrayList<View>()          // açılan panelin yuvarlakları (sırayla MORE ile aynı)
+            val moreH = dp(40) * (MORE.size / 8)
+            val startOpen = style.img == null && style.color != 0 && style.color !in POPULAR
+            var more = startOpen                      // seçili renk gizli paletteyse panel açık başlar
+
+            val lookHead = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            lookHead.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), 0, 0, 0) }, lp(0, WRAP, 1f))
             val imgBtn = tv("", 13f, SUB, true).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(14), 0, dp(14), 0)
             }
+            lookHead.addView(imgBtn, lp(WRAP, dp(32)))
+            sh.addView(lookHead, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, dp(4)) })
+
+            fun swatchBg(col: Int, on: Boolean): Drawable = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                if (col == 0) intArrayOf(0xFF222226.toInt(), 0xFF141416.toInt())
+                else intArrayOf(shade(col, 0.12f), shade(col, -0.16f))
+            ).apply {
+                shape = GradientDrawable.OVAL
+                setStroke(dp(2), if (on) TEXT else if (col == 0) BORDER else 0)
+            }
+
+            fun isOn(col: Int) = style.img == null && style.color == col
+
             fun styleLook() {
-                swatches.forEachIndexed { n, v ->
-                    val col = if (n == 0) 0 else PALETTE[n - 1]
-                    val on = style.img == null && style.color == col
-                    v.background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(if (col == 0) KEY else col)
-                        setStroke(dp(2), if (on) TEXT else if (col == 0) BORDER else 0)
-                    }
+                for ((col, dot) in dots) {
+                    val on = isOn(col)
+                    dot.background = swatchBg(col, on)
+                    val sc = if (on) 1.12f else 1f
+                    dot.animate().scaleX(sc).scaleY(sc).setStartDelay(0L).setDuration(DUR).setInterpolator(ease).start()
                 }
                 val has = style.img != null
                 imgBtn.text = s(if (has) "Image ✓" else "Choose image")
                 imgBtn.setTextColor(if (has) ACCENT else SUB)
                 imgBtn.background = box(if (has) BG else KEY, if (has) ACCENT else 0)
             }
-            val swRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+
+            fun dotCell(col: Int, into: ArrayList<View>?): View {
+                val dot = tv(if (col == 0) "×" else "", 16f, SUB, true).apply { gravity = Gravity.CENTER }
+                dots.add(Pair(col, dot))
+                into?.add(dot)
+                val holder = FrameLayout(this).apply {
+                    addView(dot, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+                    setOnClickListener { style.color = col; style.img = null; styleLook() }
+                }
+                pressFx(holder, 0.88f)
+                return holder
             }
-            for (n in 0..PALETTE.size) {
-                val col = if (n == 0) 0 else PALETTE[n - 1]
-                val sw = tv(if (n == 0) "×" else "", 16f, SUB, true).apply {
-                    gravity = Gravity.CENTER
-                    setOnClickListener {
-                        style.color = col
-                        style.img = null
-                        styleLook()
+
+            fun colorRow(cells: List<View>): LinearLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                for (c in cells) addView(c, lp(0, dp(40), 1f))
+            }
+
+            val arrow = chev(SUB, if (startOpen) 0f else -90f).apply {
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(KEY) }
+            }
+            val arrowHolder = FrameLayout(this).apply {
+                addView(arrow, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+            }
+            pressFx(arrowHolder, 0.88f)
+            val firstRow = ArrayList<View>()
+            firstRow.add(dotCell(0, null))
+            for (c in POPULAR) firstRow.add(dotCell(c, null))
+            firstRow.add(arrowHolder)
+            sh.addView(colorRow(firstRow), lp(MATCH, WRAP))
+
+            val morePanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            for (r in 0 until MORE.size / 8) {
+                val cells = ArrayList<View>()
+                for (i in 0 until 8) cells.add(dotCell(MORE[r * 8 + i], moreDots))
+                morePanel.addView(colorRow(cells))
+            }
+            val moreHost = FrameLayout(this).apply { clipChildren = true }
+            moreHost.addView(morePanel, FrameLayout.LayoutParams(MATCH, moreH))
+            sh.addView(moreHost, lp(MATCH, if (startOpen) moreH else 0))
+            if (!startOpen) moreDots.forEach { it.alpha = 0f }
+
+            arrowHolder.setOnClickListener {
+                more = !more
+                ValueAnimator.ofInt(moreHost.layoutParams.height, if (more) moreH else 0).apply {
+                    duration = 260L
+                    interpolator = easeIO
+                    addUpdateListener {
+                        val p = moreHost.layoutParams
+                        p.height = it.animatedValue as Int
+                        moreHost.layoutParams = p
+                    }
+                    start()
+                }
+                arrow.animate().rotation(if (more) 0f else -90f).setDuration(240L).setInterpolator(easeIO).start()
+                moreDots.forEachIndexed { i, d ->
+                    d.animate().cancel()
+                    if (more) {
+                        val ts = if (isOn(MORE[i])) 1.12f else 1f
+                        d.alpha = 0f
+                        d.scaleX = 0.4f
+                        d.scaleY = 0.4f
+                        d.animate().alpha(1f).scaleX(ts).scaleY(ts)
+                            .setStartDelay(60L + i * 14L).setDuration(220L).setInterpolator(pop).start()
+                    } else {
+                        d.animate().alpha(0f).setStartDelay(0L).setDuration(120L).setInterpolator(ease).start()
                     }
                 }
-                pressFx(sw, 0.92f)
-                swatches.add(sw)
-                swRow.addView(sw, lp(dp(34), dp(34)).apply { setMargins(0, 0, dp(8), 0) })
-                if (n == 0) swRow.addView(imgBtn, lp(WRAP, dp(34)).apply { setMargins(0, 0, dp(8), 0) })
             }
-            val hsLook = HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                addView(swRow)
-            }
-            sh.addView(hsLook, lp(MATCH, WRAP))
+
             imgBtn.setOnClickListener {
                 pickImage { fileName ->
                     if (fileName != null) {
