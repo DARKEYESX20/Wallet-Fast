@@ -251,6 +251,15 @@ class MainActivity : Activity() {
         "Change the order of your categories" to "Kategorilerinin sırasını değiştir",
         "Hold a category and drag it to move it" to "Taşımak için bir kategoriye basılı tutup sürükle",
         "Delete category?" to "Kategori silinsin mi?",
+        "Danger zone" to "Tehlikeli bölge",
+        "Reset my data" to "Verilerimi sıfırla",
+        "Delete everything and restore the app settings" to "Her şeyi sil ve uygulama ayarlarını sıfırla",
+        "Reset my data?" to "Verilerim sıfırlansın mı?",
+        "Are you absolutely sure?" to "Kesinlikle emin misin?",
+        "Continue" to "Devam",
+        "Reset everything" to "Her şeyi sıfırla",
+        "All data was reset" to "Tüm veriler sıfırlandı",
+        "Couldn't reset data" to "Veriler sıfırlanamadı",
         "Change category?" to "Kategori değişsin mi?",
         "Yes" to "Evet",
         "No" to "Hayır",
@@ -2107,24 +2116,70 @@ class MainActivity : Activity() {
     }
 
     // tappable menu row with a forward arrow
-    private fun menuRow(title: String, sub: String?, onClick: () -> Unit): View {
+    private fun menuRow(title: String, sub: String?, tint: Int = TEXT, line: Int = BORDER, onClick: () -> Unit): View {
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(64)
             setPadding(dp(16), dp(12), dp(14), dp(12))
-            background = tap(CARD, BORDER)
+            background = tap(CARD, line)
             setOnClickListener { onClick() }
         }
         val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        l.addView(tv(title, 15f, TEXT, true))
+        l.addView(tv(title, 15f, tint, true))
         if (sub != null) l.addView(tv(sub, 12f, SUB).apply { setPadding(0, dp(2), 0, 0) })
         r.addView(l, lp(0, WRAP, 1f))
-        r.addView(chev(SUB, -90f), lp(dp(20), dp(20)))
+        r.addView(chev(if (tint == TEXT) SUB else tint, -90f), lp(dp(20), dp(20)))
         pressFx(r, 0.98f)
         return r
     }
+    // ---------- reset ----------
 
+    // two questions in a row; only the second "yes" really erases anything
+    private fun askReset() {
+        val m1 = if (lang == "tr")
+            "Tüm hesapların, şablonların, kategorilerin, işlemlerin ve fotoğrafların silinecek, uygulama ayarları da sıfırlanacak. Verilerine tekrar ihtiyacın olabilirse önce yedek al (İçe ve Dışa Aktar)."
+        else
+            "All your accounts, templates, categories, transactions and photos will be deleted, and the app settings will be reset. If you might need your data again, make a backup first (Import & Export)."
+        openConfirm("Reset my data?", m1, "Continue") {
+            val m2 = if (lang == "tr")
+                "Telefondaki her şey hemen silinecek. Bu işlem geri alınamaz."
+            else
+                "Everything on this phone will be erased right now. This can't be undone."
+            openConfirm("Are you absolutely sure?", m2, "Reset everything", delaySec = 3) { resetAll() }
+        }
+    }
+
+    // erases every account, template, category, transaction and photo and puts the app settings back to the defaults
+    private fun resetAll() {
+        try {
+            if (file.exists() && !file.delete()) throw java.io.IOException("can't delete")
+            File(filesDir, "transactions.jsonl.tmp").delete()
+            File(filesDir, "telefon.jsonl").delete()
+        } catch (e: Exception) {
+            snack("Couldn't reset data")
+            return
+        }
+        imgDir().listFiles()?.forEach { it.delete() }
+        bmpCache.clear()
+        txs.clear()
+        autoClose = false
+        vibrate = true
+        lang = "tr"
+        defaults()
+        saveCfg()
+        fold.clear()
+        shown.clear()
+        lastTapIdx = -1
+        newTxId = null
+        edit = false
+        tab = 0
+        screen = 0
+        enter = 3
+        shownKey = -1      // rebuild the bottom bar too (language went back to Turkish)
+        render()
+        snack("All data was reset")
+    }
     private fun buildSettings(): View {
         val root = page()
         // same two-line header as the main screen, so the arrow stays exactly where it was tapped
@@ -2201,10 +2256,16 @@ class MainActivity : Activity() {
         langRow.addView(langSeg)
         root.addView(langRow, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
 
-        // Import & Export is always the last item
         root.addView(
             menuRow("Import & Export", "Back up or restore your data") { screen = 2; enter = 3; render() },
             lp(MATCH, WRAP).apply { setMargins(0, dp(28), 0, 0) }
+        )
+
+        // Danger zone is always the last item
+        root.addView(section("Danger zone").apply { setTextColor(DANGER) })
+        root.addView(
+            menuRow("Reset my data", "Delete everything and restore the app settings", DANGER, DANGER) { askReset() },
+            lp(MATCH, WRAP)
         )
         return root
     }
@@ -3686,7 +3747,7 @@ class MainActivity : Activity() {
     // ---------- confirm sheet ----------
     private fun openConfirm(
         title: String, msg: String, okLabel: String,
-        cancelLabel: String = "Cancel", okColor: Int = DANGER,
+        cancelLabel: String = "Cancel", okColor: Int = DANGER, delaySec: Int = 0,
         onOk: () -> Unit
     ) {
         val f = frame ?: return
@@ -3732,6 +3793,29 @@ class MainActivity : Activity() {
         pressFx(okBtn, 0.97f)
         btns.addView(okBtn, lp(0, dp(52), 1.5f))
         sh.addView(btns)
+
+        // countdown: the button stays disabled (and shows the seconds left) until the time is up
+        if (delaySec > 0) {
+            var left = delaySec
+            okBtn.isEnabled = false
+            okBtn.alpha = 0.4f
+            okBtn.text = s(okLabel) + " ($left)"
+            val tick = object : Runnable {
+                override fun run() {
+                    if (sheet !== scrim) return      // the sheet was closed meanwhile
+                    left--
+                    if (left > 0) {
+                        okBtn.text = s(okLabel) + " ($left)"
+                        okBtn.postDelayed(this, 1000)
+                    } else {
+                        okBtn.text = s(okLabel)
+                        okBtn.isEnabled = true
+                        okBtn.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
+                    }
+                }
+            }
+            okBtn.postDelayed(tick, 1000)
+        }
 
         scrim.addView(sh, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
         f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
