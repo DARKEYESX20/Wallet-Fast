@@ -3826,7 +3826,7 @@ class MainActivity : Activity() {
         if (sheet != null) return
         val expense = t.ask == 1
         val c = if (expense) DANGER else ACCENT
-        val acc = accOf(t.acc) ?: activeAcc()
+        var accId = accOf(t.acc)?.id ?: activeAcc().id   // starts as the template's account, can be changed in the sheet
         val buf = StringBuilder(if (t.amt > 0.0) raw(t.amt) else "")
 
         val scrim = FrameLayout(this).apply {
@@ -3847,8 +3847,36 @@ class MainActivity : Activity() {
             View(this).apply { background = box(BORDER) },
             lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
         )
-        sh.addView(tv(t.label, 18f, TEXT, true, user = true).apply { setPadding(dp(2), 0, 0, 0) })
-        sh.addView(tv(acc.name, 12f, SUB, false, true).apply { setPadding(dp(2), dp(2), 0, dp(10)) })
+        sh.addView(tv(t.label, 18f, TEXT, true, user = true).apply { setPadding(dp(2), 0, 0, dp(10)) })
+
+        // account: tap a chip to charge another account just for this entry
+        if (accs.size > 1) {
+            val chips = ArrayList<TextView>()
+            val inner = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            fun styleChips() {
+                chips.forEachIndexed { n, chip ->
+                    val on = accs[n].id == accId
+                    chip.setTextColor(if (on) c else SUB)
+                    chip.background = box(if (on) BG else KEY, if (on) c else 0)
+                }
+            }
+            accs.forEach { a ->
+                val chip = chipView(a.name, true)
+                chip.setOnClickListener { accId = a.id; styleChips() }
+                chips.add(chip)
+                inner.addView(chip, lp(WRAP, WRAP).apply { setMargins(0, 0, dp(6), 0) })
+            }
+            val hs = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(inner)
+            }
+            sh.addView(hs, lp(MATCH, WRAP).apply { setMargins(0, 0, 0, dp(10)) })
+            styleChips()
+            val sel = accs.indexOfFirst { it.id == accId }
+            if (sel > 0) hs.post { hs.scrollTo(Math.max(0, chips[sel].left - dp(40)), 0) }
+        } else {
+            sh.addView(tv(accs[0].name, 12f, SUB, false, true).apply { setPadding(dp(2), 0, 0, dp(10)) })
+        }
 
         val amtBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3923,7 +3951,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 closeSheet()
-                addTx(t.label, if (expense) -v else v, acc.id, -1, t.cat)
+                addTx(t.label, if (expense) -v else v, accId, -1, t.cat)
                 buzz()
                 if (autoClose) quit() else render()
             }
