@@ -3748,9 +3748,10 @@ class MainActivity : Activity() {
         }
         catDel.setOnClickListener {
             val target = editing
-            if (target != null) openConfirmOver("Delete category?", catDelMsg(target), "Delete") {
-                tpls.forEach { if (it.cat == target.id) it.cat = "" }
-                doDelCat()
+            if (target != null) {
+                // no transaction uses this category: delete right away, no question
+                if (txs.none { it.cat == target.id }) doDelCat()
+                else openConfirmOver("Delete category?", catDelMsg(target), "Delete") { doDelCat() }
             }
         }
         amtBox.setOnClickListener { dateF.close(); toAmount() }
@@ -4942,9 +4943,10 @@ class MainActivity : Activity() {
         }
         catDel.setOnClickListener {
             val target = catEditing
-            if (target != null) openConfirmOver("Delete category?", catDelMsg(target), "Delete") {
-                tpls.forEach { if (it.cat == target.id) it.cat = "" }
-                doDelCat()
+            if (target != null) {
+                // no transaction uses this category: delete right away, no question
+                if (txs.none { it.cat == target.id }) doDelCat()
+                else openConfirmOver("Delete category?", catDelMsg(target), "Delete") { doDelCat() }
             }
         }
         catCommit = { commitCat() }
