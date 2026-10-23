@@ -75,11 +75,12 @@ class MainActivity : Activity() {
         var color: Int = 0,
         var img: String? = null,
         var ask: Int = 0,
-        var cat: String = ""       // category id, "" = none
+        var cat: String = "",      // category id, "" = none
+        val id: String = UUID.randomUUID().toString().substring(0, 8)
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
-    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1, val cat: String = "")
+    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1, val cat: String = "", val tpl: String = "")
 
     // a category the user made himself (built-in ones are in EXP_CATS / INC_CATS). kind: 0 = income, 1 = expense
     private class Cat(val id: String, var name: String, val kind: Int)
@@ -552,12 +553,13 @@ class MainActivity : Activity() {
 
     private fun loadCfg() {
         val s = getSharedPreferences("cfg", MODE_PRIVATE).getString("cfg", null)
-        if (s == null) { defaults(); return }
+        if (s == null) { defaults(); saveCfg(); return }
         try {
             applyCfg(parseCfg(JSONObject(s)))
         } catch (e: Exception) {
             defaults()
         }
+        saveCfg()
     }
 
     // reads the config JSON (also the "cfg" part of a backup); throws if it is not usable
@@ -600,7 +602,8 @@ class MainActivity : Activity() {
                     x.optInt("col", 0),
                     x.optString("img", "").ifEmpty { null },
                     x.optInt("ask", 0),
-                    x.optString("cat", "")
+                    x.optString("cat", ""),
+                    x.optString("tid", "").ifEmpty { UUID.randomUUID().toString().substring(0, 8) }
                 )
             )
         }
@@ -656,7 +659,7 @@ class MainActivity : Activity() {
         val t = JSONArray()
         tpls.forEach {
             t.put(
-                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc).put("ask", it.ask).put("cat", it.cat)
+                JSONObject().put("tid", it.id).put("l", it.label).put("a", it.amt).put("c", it.acc).put("ask", it.ask).put("cat", it.cat)
                     .put("col", it.color).put("img", it.img ?: "")
             )
         }
@@ -702,7 +705,7 @@ class MainActivity : Activity() {
                             if (to > maxId) maxId = to
                             m[o.getString("id")] = Tx(
                                 o.getString("id"), o.getLong("t"),
-                                acc, o.getString("l"), o.getDouble("a"), to, o.optString("cat", "")
+                                acc, o.getString("l"), o.getDouble("a"), to, o.optString("cat", ""), o.optString("tpl", "")
                             )
                         }
                         "undo" -> m.remove(o.getString("ref"))
@@ -726,13 +729,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "", t: Long = System.currentTimeMillis()) {
-        val tx = Tx(UUID.randomUUID().toString(), t, acc, label, amt, to, cat)
+    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "", t: Long = System.currentTimeMillis(), tpl: String = "") {
+        val tx = Tx(UUID.randomUUID().toString(), t, acc, label, amt, to, cat, tpl)
         txs.add(tx)
         newTxId = tx.id
         val o = JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt)
         if (to >= 0) o.put("to", to)
         if (cat.isNotEmpty()) o.put("cat", cat)
+        if (tpl.isNotEmpty()) o.put("tpl", tpl)
         append(o)
     }
 
@@ -755,6 +759,7 @@ class MainActivity : Activity() {
                                 .put("l", nw.label).put("a", nw.amt)
                             if (nw.to >= 0) n.put("to", nw.to)
                             if (nw.cat.isNotEmpty()) n.put("cat", nw.cat)
+                            if (nw.tpl.isNotEmpty()) n.put("tpl", nw.tpl)
                             out = n.toString()
                         }
                     } catch (e: Exception) {
@@ -805,11 +810,10 @@ class MainActivity : Activity() {
 
     // after a template's category changed: asks if the transactions made with it should get the new category too
     // (a transaction only remembers the template's name, so they are matched by that name)
-    private fun offerRecat(label: String, newCat: String) {
-        if (label.isEmpty()) return
+    private fun offerRecat(tp: Tpl, label: String, newCat: String) {
         val kind = cats.firstOrNull { it.id == newCat }?.kind ?: -1
         val hit = txs.filter {
-            it.label == label && it.to < 0 && it.cat != newCat &&
+            (it.tpl == tp.id || (it.tpl.isEmpty() && label.isNotEmpty() && it.label == label)) && it.to < 0 && it.cat != newCat &&
                     (kind < 0 || (kind == 1 && it.amt <= 0.0) || (kind == 0 && it.amt >= 0.0))
         }
         if (hit.isEmpty()) return
@@ -826,7 +830,7 @@ class MainActivity : Activity() {
             if (retagTx(ids, newCat)) {
                 for (i in txs.indices) {
                     val x = txs[i]
-                    if (x.id in ids) txs[i] = Tx(x.id, x.t, x.acc, x.label, x.amt, x.to, newCat)
+                    if (x.id in ids) txs[i] = Tx(x.id, x.t, x.acc, x.label, x.amt, x.to, newCat, x.tpl)
                 }
                 render()
             } else {
@@ -1769,7 +1773,7 @@ class MainActivity : Activity() {
                         if (now - lastTap < gap) return@setOnClickListener
                         lastTap = now
                         lastTapIdx = idx
-                        addTx(t.label, t.amt, accOf(t.acc)?.id ?: active, -1, t.cat)
+                        addTx(t.label, t.amt, accOf(t.acc)?.id ?: active, -1, t.cat, tpl = t.id)
                         buzz()
                         if (autoClose) quit() else render()
                     }
@@ -2480,6 +2484,7 @@ class MainActivity : Activity() {
             val j = JSONObject().put("id", x.id).put("t", x.t).put("acc", x.acc).put("l", x.label).put("a", x.amt)
             if (x.to >= 0) j.put("to", x.to)
             if (x.cat.isNotEmpty()) j.put("cat", x.cat)
+            if (x.tpl.isNotEmpty()) j.put("tpl", x.tpl)
             ta.put(j)
         }
         o.put("tx", ta)
@@ -2552,7 +2557,7 @@ class MainActivity : Activity() {
             val to = x.optInt("to", -1)
             if (acc !in ids || !seen.add(id)) continue
             if (to >= 0 && (to !in ids || to == acc)) continue     // a transfer needs two different, existing accounts
-            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to, x.optString("cat", "")))
+            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to, x.optString("cat", ""), x.optString("tpl", "")))
         }
         return Backup(cfg, list, imgs, o.optLong("exported", 0L))
     }
@@ -2600,6 +2605,7 @@ class MainActivity : Activity() {
                         .put("l", x.label).put("a", x.amt)
                     if (x.to >= 0) o.put("to", x.to)
                     if (x.cat.isNotEmpty()) o.put("cat", x.cat)
+                    if (x.tpl.isNotEmpty()) o.put("tpl", x.tpl)
                     w.write(o.toString())
                     w.newLine()
                 }
@@ -3769,7 +3775,7 @@ class MainActivity : Activity() {
                 }
             } else {
                 val amt = if (kind == 1 && v != 0.0) -v else v
-                val nw = Tx(ed.id, whenMs, acc1, note, amt, if (kind == 2) acc2 else -1, if (kind == 2) "" else picked)
+                val nw = Tx(ed.id, whenMs, acc1, note, amt, if (kind == 2) acc2 else -1, if (kind == 2) "" else picked, ed.tpl)
                 if (updateTx(nw)) {
                     val i = txs.indexOf(ed)
                     if (i >= 0) txs[i] = nw
@@ -4059,7 +4065,7 @@ class MainActivity : Activity() {
             saveCfg()
             render()
             // render() comes first: it closes any open sheet, so the question must open after it
-            if (!isNew && catRef[0] != oldCat) offerRecat(oldLabel, catRef[0])
+            if (!isNew && catRef[0] != oldCat) tpls.getOrNull(idx)?.let { offerRecat(it, oldLabel, catRef[0]) }
         }
     }
 
@@ -4212,7 +4218,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 closeSheet()
-                addTx(t.label, if (expense) -v else v, accId, -1, t.cat)
+                addTx(t.label, if (expense) -v else v, accId, -1, t.cat, tpl = t.id)
                 buzz()
                 if (autoClose) quit() else render()
             }
