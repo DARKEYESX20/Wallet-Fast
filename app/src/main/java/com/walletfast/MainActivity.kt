@@ -76,7 +76,7 @@ class MainActivity : Activity() {
         var img: String? = null,
         var ask: Int = 0,
         var cat: String = "",      // category id, "" = none
-        val id: String = UUID.randomUUID().toString().substring(0, 8)
+        val id: String = UUID.randomUUID().toString().replace("-", "").substring(0, 10)
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
@@ -603,7 +603,7 @@ class MainActivity : Activity() {
                     x.optString("img", "").ifEmpty { null },
                     x.optInt("ask", 0),
                     x.optString("cat", ""),
-                    x.optString("tid", "").ifEmpty { UUID.randomUUID().toString().substring(0, 8) }
+                    x.optString("tid", "").ifEmpty { UUID.randomUUID().toString().replace("-", "").substring(0, 10) }
                 )
             )
         }
