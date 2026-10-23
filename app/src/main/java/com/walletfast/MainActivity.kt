@@ -67,10 +67,11 @@ class MainActivity : Activity() {
     private class Tpl(
         var label: String,
         var amt: Double,
-        var acc: Int = -1,         // account id, -1 = follow the active account
-        var color: Int = 0,        // 0 = default card look
-        var img: String? = null,   // file name inside filesDir/tpl
-        var ask: Int = 0           // 0 = normal, 1 = special (asks the price, expense), 2 = special (income)
+        var acc: Int = -1,
+        var color: Int = 0,
+        var img: String? = null,
+        var ask: Int = 0,
+        var cat: String = ""       // category id, "" = none
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
@@ -246,6 +247,11 @@ class MainActivity : Activity() {
         "Gift" to "Hediye",
         "Refund" to "İade",
         "Settings" to "Ayarlar",
+        "Reorder categories" to "Kategorileri sırala",
+        "Change the order of your categories" to "Kategorilerinin sırasını değiştir",
+        "Hold a category and drag it to move it" to "Taşımak için bir kategoriye basılı tutup sürükle",
+        "Delete category?" to "Kategori silinsin mi?",
+        "No categories" to "Kategori yok",
         "Language" to "Dil",
         "Vibration" to "Titreşim",
         "Save & close app on template tap" to "Şablona dokununca kaydet ve uygulamayı kapat",
@@ -345,8 +351,9 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
         when {
+            over != null -> closeOver()
             sheet != null -> if (sheet === addMenu) closeAddMenu() else closeSheet()
-            screen == 2 -> { screen = 1; enter = 3; render() }
+            screen == 2 || screen == 3 -> { screen = 1; enter = 3; render() }
             screen == 1 -> { screen = 0; enter = 2; render() }
             tab != 0 -> { tab = 0; navAnim = true; render() }
             else -> super.onBackPressed()
@@ -418,6 +425,7 @@ class MainActivity : Activity() {
     // ---------- data ----------
     private fun defaults() {
         accs.clear(); tpls.clear()
+        cats.clear(); cats.addAll(builtinCats())
         accs.add(Acc(0, "${s("Account")} 1", 0.0))
         accs.add(Acc(1, "${s("Account")} 2", 0.0))
         nid = 2
@@ -491,7 +499,8 @@ class MainActivity : Activity() {
                     if (c in ids) c else -1,
                     x.optInt("col", 0),
                     x.optString("img", "").ifEmpty { null },
-                    x.optInt("ask", 0)
+                    x.optInt("ask", 0),
+                    x.optString("cat", "")
                 )
             )
         }
@@ -508,6 +517,11 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // older files hold only the user's own categories: the built-in ones are added in front of them
+        if (o.optInt("cv", 0) < 1) cl.addAll(0, builtinCats())
+        val known = HashSet<String>()
+        for (c in cl) known.add(c.id)
+        for (tp in tl) if (tp.cat !in known) tp.cat = ""
         var act = o.optInt("active", 0)
         if (act !in ids || list.any { it.id == act && it.tplOnly }) act = (list.firstOrNull { !it.tplOnly } ?: list[0]).id
         return Cfg(
@@ -542,12 +556,12 @@ class MainActivity : Activity() {
         val t = JSONArray()
         tpls.forEach {
             t.put(
-                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc).put("ask", it.ask)
+                JSONObject().put("l", it.label).put("a", it.amt).put("c", it.acc).put("ask", it.ask).put("cat", it.cat)
                     .put("col", it.color).put("img", it.img ?: "")
             )
         }
         return JSONObject().put("accs", a).put("tpls", t).put("active", active)
-            .put("nid", nid).put("ac", autoClose).put("vib", vibrate).put("lang", lang).put("cats", catsJson())
+            .put("nid", nid).put("ac", autoClose).put("vib", vibrate).put("lang", lang).put("cv", 1).put("cats", catsJson())
     }
 
     private fun saveCfg() {
@@ -1212,6 +1226,7 @@ class MainActivity : Activity() {
         val v = when (screen) {
             1 -> buildSettings()
             2 -> buildBackup()
+            3 -> buildCatOrder()
             else -> if (tab == 0) buildTemplates() else buildAccounts()
         }
         s.addView(v)
@@ -1576,7 +1591,7 @@ class MainActivity : Activity() {
                         if (now - lastTap < gap) return@setOnClickListener
                         lastTap = now
                         lastTapIdx = idx
-                        addTx(t.label, t.amt, accOf(t.acc)?.id ?: active)
+                        addTx(t.label, t.amt, accOf(t.acc)?.id ?: active, -1, t.cat)
                         buzz()
                         if (autoClose) quit() else render()
                     }
@@ -2068,6 +2083,11 @@ class MainActivity : Activity() {
             lp(MATCH, WRAP).apply { setMargins(0, dp(14), 0, 0) }
         )
 
+        root.addView(
+            menuRow("Reorder categories", "Change the order of your categories") { screen = 3; enter = 3; render() },
+            lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) }
+        )
+
         fun setting(label: String, on: Boolean, top: Int, change: (Boolean) -> Unit) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -2122,6 +2142,42 @@ class MainActivity : Activity() {
             menuRow("Import & Export", "Back up or restore your data") { screen = 2; enter = 3; render() },
             lp(MATCH, WRAP).apply { setMargins(0, dp(28), 0, 0) }
         )
+        return root
+    }
+
+    // Settings > Reorder categories: hold a row and drag it
+    private fun buildCatOrder(): View {
+        val root = page()
+        pageTop(root, "Reorder categories") { screen = 1; enter = 3; render() }
+        root.addView(
+            tv("Hold a category and drag it to move it", 13f, SUB).apply { setPadding(dp(2), 0, dp(2), dp(4)) },
+            lp(MATCH, WRAP)
+        )
+        for (kind in intArrayOf(1, 0)) {
+            root.addView(section(if (kind == 1) "Expense" else "Income"))
+            val list = cats.filter { it.kind == kind }
+            if (list.isEmpty()) {
+                root.addView(tv("No categories", 14f, SUB))
+                continue
+            }
+            val rows = ArrayList<View>()
+            list.forEachIndexed { idx, c ->
+                val r = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(52)
+                    setPadding(dp(16), dp(10), dp(16), dp(10))
+                    background = box(CARD)
+                }
+                r.addView(tv(cn(c), 15f, TEXT, true, true), lp(0, WRAP, 1f))
+                val h = FrameLayout(this)
+                h.addView(r, FrameLayout.LayoutParams(MATCH, WRAP))
+                rows.add(h)
+                dragSort(h, idx, rows, 0.6f) { f, to -> moveCat(kind, f, to) }
+                jiggle(h, 0.6f)
+                root.addView(h, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
+            }
+        }
         return root
     }
 
@@ -2576,12 +2632,41 @@ class MainActivity : Activity() {
         "i_inv" to "Investment return", "i_gift" to "Gift", "i_ref" to "Refund", "i_other" to "Other"
     )
 
+    // the built-in categories as normal Cat objects (they are put in front of the user's own ones the first time)
+    private fun builtinCats(): List<Cat> {
+        val l = ArrayList<Cat>()
+        for (p in EXP_CATS) l.add(Cat(p.first, p.second, 1))
+        for (p in INC_CATS) l.add(Cat(p.first, p.second, 0))
+        return l
+    }
+
+    // display name: a built-in category that still has its original name follows the app language
+    private fun cn(c: Cat): String {
+        for (p in EXP_CATS) if (p.first == c.id && p.second == c.name) return s(c.name)
+        for (p in INC_CATS) if (p.first == c.id && p.second == c.name) return s(c.name)
+        return c.name
+    }
+
+    // moves a category inside its own kind (from / to are positions among the categories of that kind)
+    private fun moveCat(kind: Int, from: Int, to: Int) {
+        val sub = cats.filter { it.kind == kind }.toMutableList()
+        if (from !in sub.indices || to !in sub.indices) return
+        sub.add(to, sub.removeAt(from))
+        var n = 0
+        for (i in cats.indices) if (cats[i].kind == kind) cats[i] = sub[n++]
+        saveCfg()
+    }
+
+    private fun catDelMsg(c: Cat): String =
+        if (lang == "tr")
+            "\u201C${cn(c)}\u201D kategorisi silinecek. Bu kategoriyi kullanan şablonlardan kalkar ve geçmiş işlemlerde artık görünmez. Bu işlem geri alınamaz."
+        else
+            "\u201C${cn(c)}\u201D will be deleted. It is removed from the templates that use it and no longer shows on past transactions. This can't be undone."
+
     // display name of a category id; null when there is none (empty id, or a category that was deleted)
     private fun catName(id: String): String? {
         if (id.isEmpty()) return null
-        for (c in cats) if (c.id == id) return c.name
-        for (p in EXP_CATS) if (p.first == id) return s(p.second)
-        for (p in INC_CATS) if (p.first == id) return s(p.second)
+        for (c in cats) if (c.id == id) return cn(c)
         return null
     }
 
@@ -3082,8 +3167,8 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         catEdit.addView(catInput, lp(0, WRAP, 1f))
-        catEdit.addView(catDel, lp(WRAP, WRAP))
         catEdit.addView(catOk, lp(WRAP, WRAP).apply { setMargins(dp(4), 0, 0, 0) })
+        catEdit.addView(catDel, lp(WRAP, WRAP))
         val catHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         catHost.addView(catFlow, lp(MATCH, WRAP))
         catHost.addView(catEdit, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
@@ -3249,7 +3334,7 @@ class MainActivity : Activity() {
 
         fun openCatEdit(target: Cat?) {
             editing = target
-            catInput.setText(target?.name ?: "")
+            catInput.setText(target?.let { cn(it) } ?: "")
             catInput.setSelection(catInput.text.length)
             catDel.visibility = if (target != null) View.VISIBLE else View.GONE
             catOk.text = s(if (target != null) "Save" else "Add")
@@ -3267,13 +3352,9 @@ class MainActivity : Activity() {
             if (kind == 2) return
             val chips = ArrayList<TextView>()
             val ids = ArrayList<String>()
-            for (p in (if (kind == 0) INC_CATS else EXP_CATS)) {
-                chips.add(chipView(p.second, false))
-                ids.add(p.first)
-            }
             for (c in cats) {
                 if (c.kind != kind) continue
-                val chip = chipView(c.name, true)
+                val chip = chipView(cn(c), true)
                 chip.isHapticFeedbackEnabled = false
                 chip.setOnLongClickListener { buzz(); openCatEdit(c); true }   // hold = rename / delete
                 chips.add(chip)
@@ -3305,12 +3386,11 @@ class MainActivity : Activity() {
             val target = editing
             if (nm.isNotEmpty()) {
                 var same: String? = null
-                for (p in (if (kind == 0) INC_CATS else EXP_CATS)) if (s(p.second).equals(nm, true)) same = p.first
-                for (c in cats) if (c.kind == kind && c.id != target?.id && c.name.equals(nm, true)) same = c.id
+                for (c in cats) if (c.kind == kind && c.id != target?.id && cn(c).equals(nm, true)) same = c.id
                 if (same != null) {
                     cat = same
                 } else if (target != null) {
-                    target.name = nm
+                    if (nm != cn(target)) target.name = nm
                     saveCfg()
                 } else {
                     val nc = Cat("c_" + UUID.randomUUID().toString().substring(0, 8), nm, kind)
@@ -3419,15 +3499,23 @@ class MainActivity : Activity() {
         catInput.setOnFocusChangeListener { _, has -> if (has) showPad(false) else frames() }
         catInput.setOnEditorActionListener { _, _, _ -> commitCat(); true }
         catOk.setOnClickListener { commitCat() }
-        catDel.setOnClickListener {
+        val doDelCat: () -> Unit = {
             val target = editing
             if (target != null) {
                 cats.remove(target)
+                tpls.forEach { if (it.cat == target.id) it.cat = "" }
                 if (cat == target.id) cat = ""
                 saveCfg()
             }
             closeCatEdit()
             fillCats()
+        }
+        catDel.setOnClickListener {
+            val target = editing
+            if (target != null) openConfirmOver("Delete category?", catDelMsg(target), "Delete") {
+                tpls.forEach { if (it.cat == target.id) it.cat = "" }
+                doDelCat()
+            }
         }
         amtBox.setOnClickListener { dateF.close(); toAmount() }
 
@@ -3661,6 +3749,7 @@ class MainActivity : Activity() {
         val origImg = old?.img
         // [0] = "Ask amount on tap" switch, [1] = Expense (true) / Income (false), filled in when saving
         val askRef = booleanArrayOf(old != null && old.ask != 0, true)
+        val catRef = arrayOf(old?.cat ?: "")
         // a special template keeps only a suggested amount (always positive); its sign comes from its kind
         val startAmt: Double? =
             if (old == null) null
@@ -3688,7 +3777,8 @@ class MainActivity : Activity() {
             accSel = if (old == null) -1 else old.acc.let { if (accOf(it) != null) it else -1 },
             style = st,
             defaultNeg = old == null || old.ask != 2,
-            askRef = askRef
+            askRef = askRef,
+            catRef = catRef
         ) { nm0, v, a ->
             val nm = if (nm0.isEmpty()) untitled(idx) else nm0
             val ask = if (askRef[0]) (if (askRef[1]) 1 else 2) else 0
@@ -3696,7 +3786,7 @@ class MainActivity : Activity() {
             // old photo is no longer used -> free the file
             if (origImg != null && origImg != st.img) deleteImg(origImg)
             if (isNew) {
-                tpls.add(Tpl(nm, amt, a, st.color, st.img, ask))
+                tpls.add(Tpl(nm, amt, a, st.color, st.img, ask, catRef[0]))
             } else {
                 val e = tpls[idx]
                 e.label = nm
@@ -3705,6 +3795,7 @@ class MainActivity : Activity() {
                 e.color = st.color
                 e.img = st.img
                 e.ask = ask
+                e.cat = catRef[0]
             }
             saveCfg()
             render()
@@ -3832,7 +3923,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 closeSheet()
-                addTx(t.label, if (expense) -v else v, acc.id)
+                addTx(t.label, if (expense) -v else v, acc.id, -1, t.cat)
                 buzz()
                 if (autoClose) quit() else render()
             }
@@ -3855,7 +3946,64 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    private var over: View? = null
+
+    private fun closeOver() {
+        over?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        over = null
+    }
+
+    // same look as openConfirm, but it opens above a sheet that is already open (the category editor)
+    private fun openConfirmOver(title: String, msg: String, okLabel: String, onOk: () -> Unit) {
+        val f = frame ?: return
+        if (over != null) return
+        hideKb()
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeOver() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+        sh.addView(tv(title, 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(6)) })
+        sh.addView(tv(msg, 14f, SUB).apply { setPadding(dp(2), 0, dp(2), dp(14)) })
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val cancelBtn = tv("Cancel", 16f, SUB, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(KEY)
+            setOnClickListener { closeOver() }
+        }
+        pressFx(cancelBtn, 0.97f)
+        btns.addView(cancelBtn, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        val okBtn = tv(okLabel, 16f, BG, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(DANGER)
+            setOnClickListener {
+                closeOver()
+                onOk()
+            }
+        }
+        pressFx(okBtn, 0.97f)
+        btns.addView(okBtn, lp(0, dp(52), 1.5f))
+        sh.addView(btns)
+        scrim.addView(sh, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        over = scrim
+    }
+
     private fun closeSheet() {
+        closeOver()
         hideKb()
         onSheetClose?.invoke()
         onSheetClose = null
@@ -3881,6 +4029,7 @@ class MainActivity : Activity() {
         defaultNeg: Boolean = true,
         tplOnlyRef: BooleanArray? = null,
         askRef: BooleanArray? = null,
+        catRef: Array<String>? = null,
         onSave: (String, Double, Int) -> Unit
     ) {
         val f = frame ?: return
@@ -4014,6 +4163,47 @@ class MainActivity : Activity() {
             }
             sh.addView(hs, lp(MATCH, WRAP))
             styleChips()
+        }
+
+        // category (templates only)
+        val catFlow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val catInput = EditText(this).apply {
+            hint = s("Category name")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            filters = arrayOf<InputFilter>(InputFilter.LengthFilter(18))
+            textSize = 14f
+            typeface = fontReg
+            setTextColor(TEXT)
+            setHintTextColor(SUB)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = box(BG, BORDER)
+        }
+        val catDel = tv("Delete", 13f, DANGER, true).apply {
+            setPadding(dp(12), dp(10), dp(8), dp(10))
+            visibility = View.GONE
+        }
+        val catOk = tv("Add", 13f, BG, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+        }
+        pressFx(catOk, 0.96f)
+        val catEdit = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        catEdit.addView(catInput, lp(0, WRAP, 1f))
+        catEdit.addView(catOk, lp(WRAP, WRAP).apply { setMargins(dp(4), 0, 0, 0) })
+        catEdit.addView(catDel, lp(WRAP, WRAP))
+        var catCommit: () -> Unit = {}
+        var onKind: () -> Unit = {}
+        if (catRef != null) {
+            sh.addView(tv("Category", 12f, SUB).apply { setPadding(dp(2), dp(12), 0, dp(4)) })
+            val catHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            catHost.addView(catFlow, lp(MATCH, WRAP))
+            catHost.addView(catEdit, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+            sh.addView(catHost, lp(MATCH, WRAP))
         }
 
         // look: card color or photo (templates and accounts). Color and photo exclude each other.
@@ -4175,6 +4365,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             background = tap(ACCENT)
             setOnClickListener {
+                if (catRef != null && catEdit.visibility == View.VISIBLE) catCommit()
                 val nm = nameEt.text.toString().trim()
                 val v = buf.toString().toDoubleOrNull() ?: 0.0
                 val msg = when {
@@ -4219,11 +4410,150 @@ class MainActivity : Activity() {
             }, 150)
         }
 
+        val cr = catRef ?: arrayOf("")
+        var catChips = ArrayList<TextView>()
+        var catIds = ArrayList<String>()
+        var catEditing: Cat? = null
+        var shownKind = if (neg) 1 else 0
+        val availC = (if (f.width > 0) f.width else resources.displayMetrics.widthPixels) - dp(36)
+        fun catKind(): Int = if (neg) 1 else 0
+        fun catColor(): Int = if (neg) DANGER else ACCENT
+
+        fun styleCats() {
+            val c = catColor()
+            catChips.forEachIndexed { n, chip ->
+                val on = catIds[n] == cr[0]
+                chip.setTextColor(if (on) c else SUB)
+                chip.background = box(if (on) BG else KEY, if (on) c else 0)
+            }
+            catOk.background = tap(c)
+        }
+
+        fun closeCatEdit() {
+            if (catEdit.visibility != View.VISIBLE) return
+            catEditing = null
+            catInput.setText("")
+            catEdit.visibility = View.GONE
+            toAmount()
+        }
+
+        fun openCatEdit(target: Cat?) {
+            catEditing = target
+            catInput.setText(target?.let { cn(it) } ?: "")
+            catInput.setSelection(catInput.text.length)
+            catDel.visibility = if (target != null) View.VISIBLE else View.GONE
+            catOk.text = s(if (target != null) "Save" else "Add")
+            catEdit.visibility = View.VISIBLE
+            catInput.requestFocus()
+            catInput.postDelayed({
+                getSystemService(InputMethodManager::class.java)
+                    ?.showSoftInput(catInput, InputMethodManager.SHOW_IMPLICIT)
+            }, 120)
+        }
+
+        fun fillCats() {
+            catFlow.removeAllViews()
+            val list = ArrayList<TextView>()
+            val ids = ArrayList<String>()
+            val k = catKind()
+            for (c in cats) {
+                if (c.kind != k) continue
+                val chip = chipView(cn(c), true)
+                chip.isHapticFeedbackEnabled = false
+                chip.setOnLongClickListener { buzz(); openCatEdit(c); true }
+                list.add(chip)
+                ids.add(c.id)
+            }
+            list.forEachIndexed { n, chip ->
+                chip.setOnClickListener {
+                    cr[0] = if (cr[0] == ids[n]) "" else ids[n]
+                    closeCatEdit()
+                    styleCats()
+                }
+            }
+            val plus = chipView("+ New", false)
+            plus.background = box(BG, BORDER)
+            plus.setOnClickListener {
+                if (catEdit.visibility == View.VISIBLE && catEditing == null) closeCatEdit() else openCatEdit(null)
+            }
+            catChips = list
+            catIds = ids
+            if (cr[0].isNotEmpty() && cr[0] !in ids) cr[0] = ""
+            val all = ArrayList<View>(list)
+            all.add(plus)
+            catFlow.addView(rowsView(packRows(all, availC)))
+            styleCats()
+        }
+
+        fun commitCat() {
+            val nm = catInput.text.toString().trim()
+            val target = catEditing
+            val k = catKind()
+            if (nm.isNotEmpty()) {
+                var same: String? = null
+                for (c in cats) if (c.kind == k && c.id != target?.id && cn(c).equals(nm, true)) same = c.id
+                if (same != null) {
+                    cr[0] = same
+                } else if (target != null) {
+                    if (nm != cn(target)) target.name = nm
+                    saveCfg()
+                } else {
+                    val nc = Cat("c_" + UUID.randomUUID().toString().substring(0, 8), nm, k)
+                    cats.add(nc)
+                    saveCfg()
+                    cr[0] = nc.id
+                }
+            }
+            closeCatEdit()
+            fillCats()
+        }
+
+        catInput.setOnFocusChangeListener { _, has ->
+            if (has) {
+                pad.visibility = View.GONE
+                amtBox.background = box(BG, BORDER)
+                nameEt.background = box(BG, BORDER)
+                catInput.background = box(BG, catColor())
+            } else {
+                catInput.background = box(BG, BORDER)
+            }
+        }
+        catInput.setOnEditorActionListener { _, _, _ -> commitCat(); true }
+        catOk.setOnClickListener { commitCat() }
+        val doDelCat: () -> Unit = {
+            val target = catEditing
+            if (target != null) {
+                cats.remove(target)
+                tpls.forEach { if (it.cat == target.id) it.cat = "" }
+                if (cr[0] == target.id) cr[0] = ""
+                saveCfg()
+            }
+            closeCatEdit()
+            fillCats()
+        }
+        catDel.setOnClickListener {
+            val target = catEditing
+            if (target != null) openConfirmOver("Delete category?", catDelMsg(target), "Delete") {
+                tpls.forEach { if (it.cat == target.id) it.cat = "" }
+                doDelCat()
+            }
+        }
+        catCommit = { commitCat() }
+        onKind = {
+            if (catKind() != shownKind) {
+                shownKind = catKind()
+                closeCatEdit()
+                cr[0] = ""
+                fillCats()
+            }
+        }
+        if (catRef != null) fillCats()
+
         nameEt.setOnFocusChangeListener { _, has -> if (has) showPad(false) }
         nameEt.setOnEditorActionListener { _, _, _ -> toAmount(); true }
         amtBox.setOnClickListener { toAmount() }
-        segNeg.setOnClickListener { neg = true; refresh(); toAmount() }
-        segPos.setOnClickListener { neg = false; refresh(); toAmount() }
+        segNeg.setOnClickListener { neg = true; refresh(); onKind(); toAmount() }
+        segPos.setOnClickListener { neg = false; refresh(); onKind(); toAmount() }
 
         val sv = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
