@@ -207,25 +207,26 @@ class MainActivity : Activity() {
     // template / account color palette (white text stays readable on all of them)
 
     // most commons
+    // en çok kullanılanlar: editörde ilk görünür
     private val POPULAR = intArrayOf(
-        0xFF4A90D9.toInt(), // light blue
-        0xFF1B2A5C.toInt(), // navy
-        0xFF7A3FA0.toInt(), // purple
-        0xFFB5476B.toInt(), // pink
-        0xFF2A8C9A.toInt(), // teal
-        0xFF2E3237.toInt()  // dark gray
+        0xFF3B6FE0.toInt(), // blue
+        0xFF047857.toInt(), // green
+        0xFFC0392B.toInt(), // red
+        0xFFC2570C.toInt(), // orange
+        0xFF6D28D9.toInt(), // purple
+        0xFFBE185D.toInt()  // pink
     )
 
-    // (>) arrow: 3x8
+    // (>) okuna basınca açılan diğer renkler: 3 satır x 8 sütun
     private val MORE = intArrayOf(
-        0xFF3B6FE0.toInt(), 0xFF2D5BA8.toInt(), 0xFF1E3A8A.toInt(), 0xFF0369A1.toInt(),
-        0xFF0E7490.toInt(), 0xFF0F766E.toInt(), 0xFF047857.toInt(), 0xFF3F7D4E.toInt(),
+        0xFF4A90D9.toInt(), 0xFF2D5BA8.toInt(), 0xFF1E3A8A.toInt(), 0xFF1B2A5C.toInt(),
+        0xFF0369A1.toInt(), 0xFF0E7490.toInt(), 0xFF2A8C9A.toInt(), 0xFF0F766E.toInt(),
 
-        0xFF5B8C2A.toInt(), 0xFFB98A1F.toInt(), 0xFFC2570C.toInt(), 0xFFC0392B.toInt(),
-        0xFF9F1239.toInt(), 0xFFBE185D.toInt(), 0xFF86198F.toInt(), 0xFF6D28D9.toInt(),
+        0xFF3F7D4E.toInt(), 0xFF5B8C2A.toInt(), 0xFFB98A1F.toInt(), 0xFF9F1239.toInt(),
+        0xFFB5476B.toInt(), 0xFF86198F.toInt(), 0xFF7A3FA0.toInt(), 0xFF4C1D95.toInt(),
 
-        0xFF4C1D95.toInt(), 0xFF0B1F3A.toInt(), 0xFF5A6670.toInt(), 0xFF44403C.toInt(),
-        0xFF1F2937.toInt(), 0xFFE9E9EC.toInt(), 0xFFE8D9B5.toInt(), 0xFFBFE3D0.toInt()
+        0xFF0B1F3A.toInt(), 0xFF2E3237.toInt(), 0xFF1F2937.toInt(), 0xFF44403C.toInt(),
+        0xFF5A6670.toInt(), 0xFFE9E9EC.toInt(), 0xFFE8D9B5.toInt(), 0xFFBFE3D0.toInt()
     )
     private val WHITE = 0xFFFFFFFF.toInt()
     private val WHITE_SUB = 0xCCFFFFFF.toInt()
@@ -289,6 +290,7 @@ class MainActivity : Activity() {
         "Positive" to "Artı",
         "Image ✓" to "Görsel ✓",
         "Choose image" to "Görsel seç",
+        "Image" to "Görsel",
         "Select Account" to "Hesap Seç",
         "Edit Account" to "Hesabı Düzenle",
         "New Account" to "Yeni Hesap",
@@ -4494,23 +4496,16 @@ class MainActivity : Activity() {
 
         // look: card color or photo (templates and accounts). Color and photo exclude each other.
         if (style != null) {
-            val dots = ArrayList<Pair<Int, View>>()   // renk -> yuvarlak (0 = varsayılan)
-            val moreDots = ArrayList<View>()          // açılan panelin yuvarlakları (sırayla MORE ile aynı)
+            val dots = ArrayList<Pair<Int, View>>()
+            val moreDots = ArrayList<View>()
             val moreH = dp(40) * (MORE.size / 8)
             val startOpen = style.img == null && style.color != 0 && style.color !in POPULAR
-            var more = startOpen                      // seçili renk gizli paletteyse panel açık başlar
+            var more = startOpen
 
-            val lookHead = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            lookHead.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), 0, 0, 0) }, lp(0, WRAP, 1f))
             val imgBtn = tv("", 13f, SUB, true).apply {
                 gravity = Gravity.CENTER
-                setPadding(dp(14), 0, dp(14), 0)
+                setPadding(dp(10), 0, dp(10), 0)
             }
-            lookHead.addView(imgBtn, lp(WRAP, dp(32)))
-            sh.addView(lookHead, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, dp(4)) })
 
             fun swatchBg(col: Int, on: Boolean): Drawable = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
@@ -4531,47 +4526,49 @@ class MainActivity : Activity() {
                     dot.animate().scaleX(sc).scaleY(sc).setStartDelay(0L).setDuration(DUR).setInterpolator(ease).start()
                 }
                 val has = style.img != null
-                imgBtn.text = s(if (has) "Image ✓" else "Choose image")
+                imgBtn.text = s(if (has) "Image ✓" else "Image")
                 imgBtn.setTextColor(if (has) ACCENT else SUB)
                 imgBtn.background = box(if (has) BG else KEY, if (has) ACCENT else 0)
             }
 
-            fun dotCell(col: Int, into: ArrayList<View>?): View {
-                val dot = tv(if (col == 0) "×" else "", 16f, SUB, true).apply { gravity = Gravity.CENTER }
+            fun dotCell(col: Int, into: ArrayList<View>?, size: Int): View {
+                val dot = tv(if (col == 0) "×" else "", 14f, SUB, true).apply { gravity = Gravity.CENTER }
                 dots.add(Pair(col, dot))
                 into?.add(dot)
                 val holder = FrameLayout(this).apply {
-                    addView(dot, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+                    addView(dot, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
                     setOnClickListener { style.color = col; style.img = null; styleLook() }
                 }
                 pressFx(holder, 0.88f)
                 return holder
             }
 
-            fun colorRow(cells: List<View>): LinearLayout = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                for (c in cells) addView(c, lp(0, dp(40), 1f))
-            }
-
+            // (>) button
             val arrow = chev(SUB, if (startOpen) 0f else -90f).apply {
-                setPadding(dp(6), dp(6), dp(6), dp(6))
+                setPadding(dp(4), dp(4), dp(4), dp(4))
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(KEY) }
             }
             val arrowHolder = FrameLayout(this).apply {
-                addView(arrow, FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+                addView(arrow, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
             }
             pressFx(arrowHolder, 0.88f)
-            val firstRow = ArrayList<View>()
-            firstRow.add(dotCell(0, null))
-            for (c in POPULAR) firstRow.add(dotCell(c, null))
-            firstRow.add(arrowHolder)
-            sh.addView(colorRow(firstRow), lp(MATCH, WRAP))
+
+            val lookRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            lookRow.addView(tv("Look", 12f, SUB).apply { setPadding(dp(2), 0, dp(10), 0) }, lp(WRAP, WRAP))
+            lookRow.addView(imgBtn, lp(WRAP, dp(30)).apply { setMargins(0, 0, dp(6), 0) })
+            lookRow.addView(dotCell(0, null, dp(24)), lp(0, dp(36), 1f))
+            for (c in POPULAR) lookRow.addView(dotCell(c, null, dp(24)), lp(0, dp(36), 1f))
+            lookRow.addView(arrowHolder, lp(0, dp(36), 1f))
+            sh.addView(lookRow, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
 
             val morePanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             for (r in 0 until MORE.size / 8) {
-                val cells = ArrayList<View>()
-                for (i in 0 until 8) cells.add(dotCell(MORE[r * 8 + i], moreDots))
-                morePanel.addView(colorRow(cells))
+                val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                for (i in 0 until 8) line.addView(dotCell(MORE[r * 8 + i], moreDots, dp(30)), lp(0, dp(40), 1f))
+                morePanel.addView(line)
             }
             val moreHost = FrameLayout(this).apply { clipChildren = true }
             moreHost.addView(morePanel, FrameLayout.LayoutParams(MATCH, moreH))
