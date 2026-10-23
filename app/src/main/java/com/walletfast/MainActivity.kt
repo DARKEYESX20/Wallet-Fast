@@ -251,6 +251,9 @@ class MainActivity : Activity() {
         "Change the order of your categories" to "Kategorilerinin sırasını değiştir",
         "Hold a category and drag it to move it" to "Taşımak için bir kategoriye basılı tutup sürükle",
         "Delete category?" to "Kategori silinsin mi?",
+        "Change category?" to "Kategori değişsin mi?",
+        "Yes" to "Evet",
+        "No" to "Hayır",
         "No categories" to "Kategori yok",
         "Language" to "Dil",
         "Vibration" to "Titreşim",
@@ -672,7 +675,68 @@ class MainActivity : Activity() {
             false
         }
     }
+    // changes the category of these transactions in transactions.jsonl (same ids, so undo lines still point at them)
+    private fun retagTx(ids: Set<String>, cat: String): Boolean {
+        if (!file.exists()) return true
+        return try {
+            val tmp = File(filesDir, "transactions.jsonl.tmp")
+            tmp.bufferedWriter().use { w ->
+                file.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    var out = line
+                    try {
+                        val o = JSONObject(line)
+                        if (o.getString("k") == "tx" && o.getString("id") in ids) {
+                            if (cat.isEmpty()) o.remove("cat") else o.put("cat", cat)
+                            out = o.toString()
+                        }
+                    } catch (e: Exception) {
+                    }
+                    w.write(out)
+                    w.newLine()
+                }
+            }
+            if (!tmp.renameTo(file)) {
+                file.writeText(tmp.readText())
+                tmp.delete()
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
+    // after a template's category changed: asks if the transactions made with it should get the new category too
+    // (a transaction only remembers the template's name, so they are matched by that name)
+    private fun offerRecat(label: String, newCat: String) {
+        if (label.isEmpty()) return
+        val kind = cats.firstOrNull { it.id == newCat }?.kind ?: -1
+        val hit = txs.filter {
+            it.label == label && it.to < 0 && it.cat != newCat &&
+                    (kind < 0 || (kind == 1 && it.amt <= 0.0) || (kind == 0 && it.amt >= 0.0))
+        }
+        if (hit.isEmpty()) return
+        val to = catName(newCat)
+        val msg = if (lang == "tr")
+            "Bu şablonla daha önce yaptığın ${hit.size} işlemin kategorisi " +
+                    (if (to != null) "\u201C$to\u201D olarak değişecek." else "kaldırılacak.")
+        else
+            "The ${cnt(hit.size, "transaction")} you made earlier with this template will " +
+                    (if (to != null) "be moved to \u201C$to\u201D." else "lose their category.")
+        val ids = HashSet<String>()
+        for (x in hit) ids.add(x.id)
+        openConfirm("Change category?", msg, "Yes", "No", ACCENT) {
+            if (retagTx(ids, newCat)) {
+                for (i in txs.indices) {
+                    val x = txs[i]
+                    if (x.id in ids) txs[i] = Tx(x.id, x.t, x.acc, x.label, x.amt, x.to, newCat)
+                }
+                render()
+            } else {
+                snack("Couldn't save entry")
+            }
+        }
+    }
     private fun undo(tx: Tx) {
         txs.remove(tx)
         append(JSONObject().put("k", "undo").put("ref", tx.id).put("t", System.currentTimeMillis()))
@@ -3620,7 +3684,11 @@ class MainActivity : Activity() {
     }
 
     // ---------- confirm sheet ----------
-    private fun openConfirm(title: String, msg: String, okLabel: String, onOk: () -> Unit) {
+    private fun openConfirm(
+        title: String, msg: String, okLabel: String,
+        cancelLabel: String = "Cancel", okColor: Int = DANGER,
+        onOk: () -> Unit
+    ) {
         val f = frame ?: return
         if (sheet != null) return
 
@@ -3646,7 +3714,7 @@ class MainActivity : Activity() {
         sh.addView(tv(msg, 14f, SUB).apply { setPadding(dp(2), 0, dp(2), dp(14)) })
 
         val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val cancelBtn = tv("Cancel", 16f, SUB, true).apply {
+        val cancelBtn = tv(cancelLabel, 16f, SUB, true).apply {
             gravity = Gravity.CENTER
             background = tap(KEY)
             setOnClickListener { closeSheet() }
@@ -3655,7 +3723,7 @@ class MainActivity : Activity() {
         btns.addView(cancelBtn, lp(0, dp(52), 1f).apply { setMargins(0, 0, dp(8), 0) })
         val okBtn = tv(okLabel, 16f, BG, true).apply {
             gravity = Gravity.CENTER
-            background = tap(DANGER)
+            background = tap(okColor)
             setOnClickListener {
                 closeSheet()
                 onOk()
@@ -3745,6 +3813,8 @@ class MainActivity : Activity() {
     private fun openTplEditor(idx: Int) {
         val isNew = idx < 0
         val old = if (isNew) null else tpls[idx]
+        val oldLabel = old?.label ?: ""   // transactions made with this template carry this name
+        val oldCat = old?.cat ?: ""
         val st = if (old == null) Style(0, null) else Style(old.color, old.img)
         val origImg = old?.img
         // [0] = "Ask amount on tap" switch, [1] = Expense (true) / Income (false), filled in when saving
@@ -3799,6 +3869,8 @@ class MainActivity : Activity() {
             }
             saveCfg()
             render()
+            // render() comes first: it closes any open sheet, so the question must open after it
+            if (!isNew && catRef[0] != oldCat) offerRecat(oldLabel, catRef[0])
         }
     }
 
