@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
-        versionName = "0.1"
+        versionName = "0.1.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
     }
 
     fun prop(name: String): String? =
