@@ -65,8 +65,13 @@ class MainActivity : Activity() {
         var open: Double,
         var color: Int = 0,        // 0 = default card look
         var img: String? = null,   // file name inside filesDir/tpl
-        var tplOnly: Boolean = false   // true = only templates can use it (hidden from Income / Expense / Transfer lists)
-    )
+        var tplOnly: Boolean = false,  // true = hidden from the Income / Expense lists (still in Transfer)
+        var sav: Boolean = false,      // true = savings account: plain amount in its own unit, not part of Total Balance
+        var unit: String = ""          // savings only: "gram", "USD", "BTC"...
+    ) {
+        // normal money account: can be the active account
+        val plain: Boolean get() = !sav && !tplOnly
+    }
 
     private class Tpl(
         var label: String,
@@ -80,11 +85,14 @@ class MainActivity : Activity() {
     )
 
     // to >= 0 means a transfer: amt (always positive) leaves account `acc` and arrives in account `to`
-    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1, val cat: String = "", val tpl: String = "")
+    private class Tx(val id: String, val t: Long, val acc: Int, val label: String, val amt: Double, val to: Int = -1, val cat: String = "", val tpl: String = "", val amt2: Double = -1.0)
 
     // a category the user made himself (built-in ones are in EXP_CATS / INC_CATS). kind: 0 = income, 1 = expense
     private class Cat(val id: String, var name: String, val kind: Int)
     private class Style(var color: Int, var img: String?)
+    // the Options of an account while its editor is open (auto = "hide" was switched on by the savings switch, not by the user)
+    private class AccOpts(var hide: Boolean, var sav: Boolean, var unit: String, var auto: Boolean = false)
+    private class Sw(val view: View, val set: (Boolean) -> Unit)
     private class Look(val bmp: Bitmap?, val styled: Boolean, val light: Boolean, val tc: Int, val sub: Int)
 
     // everything the config JSON holds (also used by backups)
@@ -389,6 +397,17 @@ class MainActivity : Activity() {
         "account" to "hesap",
         "template" to "şablon",
         "Options" to "Seçenekler",
+        "Savings account" to "Birikim hesabı",
+        "Savings Accounts" to "Birikim Hesapları",
+        "Kept out of Total Balance. Just an amount and a unit: gold, dollars, crypto..." to "Toplam Bakiye'ye dahil edilmez. Sadece miktar ve birim: altın, dolar, kripto...",
+        "Unit (e.g. gram, USD, BTC)" to "Birim (örn. gram, USD, BTC)",
+        "Hide from Income & Expense" to "Gelir ve Gider'de gizle",
+        "Still available in Transfer" to "Transfer'de yine de görünür",
+        "Hidden" to "Gizli",
+        "Can't be the active account" to "Aktif hesap olamaz",
+        "Sent" to "Giden",
+        "Received" to "Gelen",
+
     )
 
     private fun s(en: String): String = if (lang == "tr") (TR[en] ?: en) else en
@@ -540,7 +559,7 @@ class MainActivity : Activity() {
         return null
     }
 
-    private fun activeAcc(): Acc = accOf(active) ?: accs[0]
+    private fun activeAcc(): Acc = accOf(active) ?: accs.firstOrNull { it.plain } ?: accs[0]
 
     // first free "Account N" name
     private fun newAccName(): String {
@@ -576,7 +595,9 @@ class MainActivity : Activity() {
                     x.getDouble("o"),
                     x.optInt("col", 0),
                     x.optString("img", "").ifEmpty { null },
-                    x.optBoolean("tpo", false)
+                    x.optBoolean("tpo", false),
+                    x.optBoolean("sav", false),
+                    x.optString("unit", "")
                 )
             )
         }
@@ -588,7 +609,13 @@ class MainActivity : Activity() {
             if (ac.id > top) top = ac.id
         }
         // at least one normal account must exist (quick add and the active account need it)
-        if (list.all { it.tplOnly }) list[0].tplOnly = false
+        if (list.none { it.plain }) {
+            val first = list.firstOrNull { !it.sav } ?: list[0]
+            first.sav = false
+            first.tplOnly = false
+        }
+        val savIds = HashSet<Int>()
+        for (ac in list) if (ac.sav) savIds.add(ac.id)
         val tl = ArrayList<Tpl>()
         val t = o.getJSONArray("tpls")
         for (i in 0 until t.length()) {
@@ -598,7 +625,7 @@ class MainActivity : Activity() {
                 Tpl(
                     x.getString("l"),
                     x.getDouble("a"),
-                    if (c in ids) c else -1,
+                    if (c in ids && c !in savIds) c else -1,
                     x.optInt("col", 0),
                     x.optString("img", "").ifEmpty { null },
                     x.optInt("ask", 0),
@@ -626,7 +653,7 @@ class MainActivity : Activity() {
         for (c in cl) known.add(c.id)
         for (tp in tl) if (tp.cat !in known) tp.cat = ""
         var act = o.optInt("active", 0)
-        if (act !in ids || list.any { it.id == act && it.tplOnly }) act = (list.firstOrNull { !it.tplOnly } ?: list[0]).id
+        if (act !in ids || list.any { it.id == act && !it.plain }) act = (list.firstOrNull { it.plain } ?: list[0]).id
         return Cfg(
             list, tl, act,
             Math.max(o.optInt("nid", 0), top + 1),
@@ -653,7 +680,7 @@ class MainActivity : Activity() {
         accs.forEach {
             a.put(
                 JSONObject().put("id", it.id).put("n", it.name).put("o", it.open)
-                    .put("col", it.color).put("img", it.img ?: "").put("tpo", it.tplOnly)
+                    .put("col", it.color).put("img", it.img ?: "").put("tpo", it.tplOnly).put("sav", it.sav).put("unit", it.unit)
             )
         }
         val t = JSONArray()
@@ -705,7 +732,7 @@ class MainActivity : Activity() {
                             if (to > maxId) maxId = to
                             m[o.getString("id")] = Tx(
                                 o.getString("id"), o.getLong("t"),
-                                acc, o.getString("l"), o.getDouble("a"), to, o.optString("cat", ""), o.optString("tpl", "")
+                                acc, o.getString("l"), o.getDouble("a"), to, o.optString("cat", ""), o.optString("tpl", ""), o.optDouble("a2", -1.0)
                             )
                         }
                         "undo" -> m.remove(o.getString("ref"))
@@ -729,14 +756,15 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "", t: Long = System.currentTimeMillis(), tpl: String = "") {
-        val tx = Tx(UUID.randomUUID().toString(), t, acc, label, amt, to, cat, tpl)
+    private fun addTx(label: String, amt: Double, acc: Int, to: Int = -1, cat: String = "", t: Long = System.currentTimeMillis(), tpl: String = "", amt2: Double = -1.0) {
+        val tx = Tx(UUID.randomUUID().toString(), t, acc, label, amt, to, cat, tpl, amt2)
         txs.add(tx)
         newTxId = tx.id
         val o = JSONObject().put("k", "tx").put("id", tx.id).put("t", tx.t).put("acc", tx.acc).put("l", label).put("a", amt)
         if (to >= 0) o.put("to", to)
         if (cat.isNotEmpty()) o.put("cat", cat)
         if (tpl.isNotEmpty()) o.put("tpl", tpl)
+        if (amt2 >= 0.0) o.put("a2", amt2)
         append(o)
     }
 
@@ -760,6 +788,7 @@ class MainActivity : Activity() {
                             if (nw.to >= 0) n.put("to", nw.to)
                             if (nw.cat.isNotEmpty()) n.put("cat", nw.cat)
                             if (nw.tpl.isNotEmpty()) n.put("tpl", nw.tpl)
+                            if (nw.amt2 >= 0.0) n.put("a2", nw.amt2)
                             out = n.toString()
                         }
                     } catch (e: Exception) {
@@ -853,13 +882,13 @@ class MainActivity : Activity() {
                 val from = m[x.acc]
                 val dest = m[x.to]
                 if (from != null) m[x.acc] = from - x.amt
-                if (dest != null) m[x.to] = dest + x.amt
+                if (dest != null) m[x.to] = dest + inAmt(x)
             } else {
                 val c = m[x.acc]
                 if (c != null) m[x.acc] = c + x.amt
             }
         }
-        for (k in m.keys.toList()) m[k] = r2(m[k] ?: 0.0)
+        for (k in m.keys.toList()) m[k] = rnd(accOf(k), m[k] ?: 0.0)
         return m
     }
 
@@ -867,7 +896,7 @@ class MainActivity : Activity() {
 
     private fun totalOf(bals: Map<Int, Double>): Double {
         var s = 0.0
-        for (a in accs) s += bals[a.id] ?: 0.0
+        for (a in accs) if (!a.sav) s += bals[a.id] ?: 0.0
         return r2(s)
     }
 
@@ -918,7 +947,7 @@ class MainActivity : Activity() {
     }
 
     // the last normal (not template-only) account can't be deleted
-    private fun canDelete(a: Acc): Boolean = accs.size > 1 && (a.tplOnly || accs.any { it !== a && !it.tplOnly })
+    private fun canDelete(a: Acc): Boolean = accs.size > 1 && (!a.plain || accs.any { it !== a && it.plain })
 
     private fun deleteAccount(a: Acc) {
         if (!canDelete(a)) return
@@ -931,7 +960,7 @@ class MainActivity : Activity() {
         tpls.forEach { if (it.acc == a.id) it.acc = -1 }
         a.img?.let { deleteImg(it) }
         accs.remove(a)
-        if (active == a.id) active = accs[0].id
+        if (active == a.id) active = (accs.firstOrNull { it.plain } ?: accs[0]).id
         saveCfg()
         render()
     }
@@ -1038,6 +1067,21 @@ class MainActivity : Activity() {
 
     // ---------- format ----------
     private fun r2(n: Double) = Math.round(n * 100.0) / 100.0
+    private fun r8(n: Double) = Math.round(n * 1e8) / 1e8
+
+    // savings accounts keep up to 8 decimals (crypto), normal accounts 2
+    private fun rnd(a: Acc?, n: Double) = if (a != null && a.sav) r8(n) else r2(n)
+    private fun decOf(id: Int) = if (accOf(id)?.sav == true) 8 else 2
+
+    // how much arrives in the "to" account of a transfer
+    private fun inAmt(x: Tx) = if (x.amt2 >= 0.0) x.amt2 else x.amt
+
+    // two accounts hold the same unit when both are normal money (₺) or both are savings with the same unit text
+    private fun unitKey(a: Acc): String {
+        if (!a.sav) return "₺"
+        val u = a.unit.trim().lowercase(Locale.ROOT)
+        return if (u == "tl" || u == "try" || u == "₺") "₺" else u
+    }
 
     private fun num(n: Double): String {
         val a = Math.abs(n)
@@ -1050,7 +1094,28 @@ class MainActivity : Activity() {
 
     private fun fmt(n: Double) = money(if (n < 0) "-" else "", num(n))
     private fun sgn(n: Double) = (if (n > 0) "+" else "") + fmt(n)
-    private fun raw(n: Double) = if (n % 1.0 == 0.0) n.toLong().toString() else String.format(Locale.US, "%.2f", n)
+
+    // savings accounts: up to 8 decimals, the unit comes after the number ("2 adet", "0.005 BTC")
+    private fun numX(n: Double): String {
+        val a = Math.abs(n)
+        if (a % 1.0 == 0.0) return String.format(Locale.US, "%,d", a.toLong())
+        return String.format(Locale.US, "%,.8f", a).trimEnd('0').trimEnd('.')
+    }
+
+    private fun moneyS(sav: Boolean, unit: String, sign: String, body: String) =
+        if (sav) sign + body + (if (unit.isEmpty()) "" else " $unit") else money(sign, body)
+
+    private fun moneyA(a: Acc?, sign: String, body: String) = moneyS(a != null && a.sav, a?.unit ?: "", sign, body)
+    private fun fmtA(a: Acc?, n: Double) = if (a != null && a.sav) moneyA(a, if (n < 0) "-" else "", numX(n)) else fmt(n)
+    private fun sgnA(a: Acc?, n: Double) = (if (n > 0) "+" else "") + fmtA(a, n)
+
+    // "10,000₺ → 2 adet" when the two accounts hold different amounts, otherwise one amount
+    private fun xferText(x: Tx): String {
+        val out = fmtA(accOf(x.acc), x.amt)
+        val inn = fmtA(accOf(x.to), inAmt(x))
+        return if (out == inn) out else "$out → $inn"
+    }
+    private fun raw(n: Double) = if (n % 1.0 == 0.0) n.toLong().toString() else String.format(Locale.US, "%.8f", n).trimEnd('0').trimEnd('.')
 
     // "1234.5" -> "1,234.5" (keeps what the user typed)
     private fun grp(s: String): String {
@@ -1298,12 +1363,12 @@ class MainActivity : Activity() {
         for (x in list) {
             if (x.to >= 0) {
                 delta[x.acc] = (delta[x.acc] ?: 0.0) - x.amt
-                delta[x.to] = (delta[x.to] ?: 0.0) + x.amt
+                delta[x.to] = (delta[x.to] ?: 0.0) + inAmt(x)
             } else {
                 delta[x.acc] = (delta[x.acc] ?: 0.0) + x.amt
             }
         }
-        for (a in accs) a.open = r2(a.open + (delta[a.id] ?: 0.0))
+        for (a in accs) a.open = rnd(a, a.open + (delta[a.id] ?: 0.0))
         txs.removeAll { it.id in ids }
         fold.remove("m$key")
         shown.remove(key)
@@ -1346,7 +1411,8 @@ class MainActivity : Activity() {
     }
 
     // custom on/off switch (knob slides, track color fades)
-    private fun toggle(on: Boolean, change: (Boolean) -> Unit): View {
+    // custom on/off switch (knob slides, track color fades). Sw.set() flips it from code without calling `change`
+    private fun switchCtl(on: Boolean, change: (Boolean) -> Unit): Sw {
         var state = on
         val track = FrameLayout(this)
         val trackBg = GradientDrawable().apply {
@@ -1364,8 +1430,9 @@ class MainActivity : Activity() {
         track.addView(knob, kp)
         val travel = dp(22).toFloat() // track 50dp - knob 22dp - margins 6dp
         knob.translationX = if (on) travel else 0f
-        track.setOnClickListener {
-            state = !state
+        fun flip(v: Boolean, notify: Boolean) {
+            if (state == v) return
+            state = v
             knob.animate().translationX(if (state) travel else 0f).setDuration(DUR).setInterpolator(ease).start()
             ValueAnimator.ofObject(ArgbEvaluator(), if (state) BORDER else ACCENT, if (state) ACCENT else BORDER).apply {
                 duration = DUR
@@ -1373,10 +1440,13 @@ class MainActivity : Activity() {
                 addUpdateListener { trackBg.setColor(it.animatedValue as Int) }
                 start()
             }
-            change(state)
+            if (notify) change(state)
         }
-        return track
+        track.setOnClickListener { flip(!state, true) }
+        return Sw(track) { flip(it, false) }
     }
+
+    private fun toggle(on: Boolean, change: (Boolean) -> Unit): View = switchCtl(on, change).view
 
     // ---------- screen ----------
 
@@ -1889,6 +1959,7 @@ class MainActivity : Activity() {
         val t = Tot()
         for (x in list) {
             if (x.to >= 0) continue        // a transfer moves money between accounts: not an expense or an income
+            if (accOf(x.acc)?.sav == true) continue   // savings amounts have their own unit: not part of the totals
             if (x.amt < 0) t.exp -= x.amt else t.inc += x.amt
         }
         t.exp = r2(t.exp)
@@ -1966,7 +2037,7 @@ class MainActivity : Activity() {
         r.addView(info, lp(0, WRAP, 1f))
         r.addView(
             tv(
-                if (xfer) fmt(tx.amt) else sgn(tx.amt), 15f,
+                if (xfer) xferText(tx) else sgnA(accOf(tx.acc), tx.amt), 15f,
                 if (xfer) PURPLE else if (tx.amt == 0.0) SUB else if (tx.amt < 0) DANGER else ACCENT, true
             )
         )
@@ -2124,10 +2195,10 @@ class MainActivity : Activity() {
         val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         l.addView(tv(a.name, 16f, lk.tc, true, user = true))
         if (sel) l.addView(tv("Active", 12f, accent))
-        else if (a.tplOnly) l.addView(tv("Template only", 12f, lk.sub))
+        else if (a.tplOnly && !a.sav) l.addView(tv("Hidden", 12f, lk.sub))
         r.addView(l, lp(0, WRAP, 1f))
         val bc = if (bal < 0) (if (lk.light) 0xFFC62828.toInt() else DANGER) else lk.tc
-        r.addView(tv(fmt(bal), balSize, bc, true))
+        r.addView(tv(fmtA(a, bal), balSize, bc, true))
         if (showEdit) r.addView(tv("Edit", 13f, accent, true).apply { setPadding(dp(12), 0, 0, 0) })
         return r
     }
@@ -2140,52 +2211,53 @@ class MainActivity : Activity() {
             "Tap an account to rename it, set its balance, change its look or delete it · hold and drag to reorder"
         )
 
-        root.addView(section("Accounts"))
-        val rows = ArrayList<View>()
-        accs.forEachIndexed { idx, a ->
-            val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
-            r.setOnClickListener {
-                if (a.tplOnly) {
-                    snack("Template only account")   // can't be the active account
+        // one list of account rows; dragging only moves a row inside its own list
+        fun addRows(list: List<Acc>, sav: Boolean) {
+            val rows = ArrayList<View>()
+            list.forEachIndexed { idx, a ->
+                val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, CARD, dp(68), 12, 18f, edit)
+                r.setOnClickListener {
+                    if (!a.plain) {
+                        snack("Can't be the active account")   // hidden and savings accounts can't be the active account
+                    } else {
+                        active = a.id
+                        saveCfg()
+                        render()
+                    }
+                }
+                val item: View = if (edit) {
+                    r.isClickable = false
+                    val h = FrameLayout(this)
+                    h.addView(r, FrameLayout.LayoutParams(MATCH, WRAP))
+                    // the last normal account can't be deleted, so it gets no cross
+                    if (canDelete(a)) {
+                        h.addView(
+                            delBadge { requestDeleteAccount(a) },
+                            FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END)
+                        )
+                    }
+                    h.setOnClickListener { openAccEditor(a) }
+                    rows.add(h)
+                    dragSort(h, idx, rows, 0.6f) { f, to -> moveAcc(sav, f, to) }
+                    jiggle(h, 0.6f)
+                    h
                 } else {
-                    active = a.id
-                    saveCfg()
-                    render()
+                    rows.add(r)
+                    pressFx(r, 0.98f)
+                    r.isHapticFeedbackEnabled = false
+                    r.setOnLongClickListener {
+                        buzz()
+                        openAccEditor(a)
+                        true
+                    }
+                    r
                 }
+                root.addView(item, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
             }
-            val item: View = if (edit) {
-                r.isClickable = false
-                val h = FrameLayout(this)
-                h.addView(r, FrameLayout.LayoutParams(MATCH, WRAP))
-                // the last normal account can't be deleted, so it gets no cross
-                if (canDelete(a)) {
-                    h.addView(
-                        delBadge { requestDeleteAccount(a) },
-                        FrameLayout.LayoutParams(dp(32), dp(32), Gravity.TOP or Gravity.END)
-                    )
-                }
-                h.setOnClickListener { openAccEditor(a) }
-                rows.add(h)
-                dragSort(h, idx, rows, 0.6f) { f, to ->
-                    val m = accs.removeAt(f)
-                    accs.add(to, m)
-                    saveCfg()
-                }
-                jiggle(h, 0.6f)
-                h
-            } else {
-                rows.add(r)
-                pressFx(r, 0.98f)
-                r.isHapticFeedbackEnabled = false
-                r.setOnLongClickListener {
-                    buzz()
-                    openAccEditor(a)
-                    true
-                }
-                r
-            }
-            root.addView(item, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
+
+        root.addView(section("Accounts"))
+        addRows(accs.filter { !it.sav }, false)
 
         val add = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2198,7 +2270,23 @@ class MainActivity : Activity() {
         pressFx(add, 0.98f)
         add.addView(tv("+ New Account", 16f, SUB, true).apply { gravity = Gravity.CENTER })
         root.addView(add, lp(MATCH, WRAP).apply { setMargins(0, dp(4), 0, dp(4)) })
+
+        // savings accounts get their own section (only when there is one)
+        if (accs.any { it.sav }) {
+            root.addView(section("Savings Accounts"))
+            addRows(accs.filter { it.sav }, true)
+        }
         return root
+    }
+
+    // moves an account inside its own list (normal or savings)
+    private fun moveAcc(sav: Boolean, from: Int, to: Int) {
+        val sub = accs.filter { it.sav == sav }.toMutableList()
+        if (from !in sub.indices || to !in sub.indices) return
+        sub.add(to, sub.removeAt(from))
+        var n = 0
+        for (i in accs.indices) if (accs[i].sav == sav) accs[i] = sub[n++]
+        saveCfg()
     }
 
     // ---------- Settings pages (full screen) ----------
@@ -2485,6 +2573,7 @@ class MainActivity : Activity() {
             if (x.to >= 0) j.put("to", x.to)
             if (x.cat.isNotEmpty()) j.put("cat", x.cat)
             if (x.tpl.isNotEmpty()) j.put("tpl", x.tpl)
+            if (x.amt2 >= 0.0) j.put("a2", x.amt2)
             ta.put(j)
         }
         o.put("tx", ta)
@@ -2557,7 +2646,7 @@ class MainActivity : Activity() {
             val to = x.optInt("to", -1)
             if (acc !in ids || !seen.add(id)) continue
             if (to >= 0 && (to !in ids || to == acc)) continue     // a transfer needs two different, existing accounts
-            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to, x.optString("cat", ""), x.optString("tpl", "")))
+            list.add(Tx(id, x.getLong("t"), acc, x.getString("l"), x.getDouble("a"), to, x.optString("cat", ""), x.optString("tpl", ""), x.optDouble("a2", -1.0)))
         }
         return Backup(cfg, list, imgs, o.optLong("exported", 0L))
     }
@@ -2606,6 +2695,7 @@ class MainActivity : Activity() {
                     if (x.to >= 0) o.put("to", x.to)
                     if (x.cat.isNotEmpty()) o.put("cat", x.cat)
                     if (x.tpl.isNotEmpty()) o.put("tpl", x.tpl)
+                    if (x.amt2 >= 0.0) o.put("a2", x.amt2)
                     w.write(o.toString())
                     w.newLine()
                 }
@@ -3301,6 +3391,17 @@ class MainActivity : Activity() {
         var editing: Cat? = null                                  // own category being renamed / deleted (null = making a new one)
 
         // width left for chips next to the 60dp label column
+        val buf2 = StringBuilder(if (ed != null && ed.to >= 0 && ed.amt2 >= 0.0) raw(ed.amt2) else "")   // Transfer: what arrives (only used when the units differ)
+        var curBuf = 1   // which amount the number pad types into
+
+        // true while a Transfer is between accounts that hold different units (e.g. ₺ -> gold)
+        fun mixed(): Boolean {
+            if (kind != 2) return false
+            val a = accOf(acc1) ?: return false
+            val b = accOf(acc2) ?: return false
+            return unitKey(a) != unitKey(b)
+        }
+
         val avail = (if (f.width > 0) f.width else resources.displayMetrics.widthPixels) - dp(36) - dp(60) - dp(8)
 
         fun kc(k: Int): Int = when (k) {
@@ -3365,6 +3466,23 @@ class MainActivity : Activity() {
         val amtTv = tv("0", 34f, SUB, true)
         amtBox.addView(amtTv, lp(0, WRAP, 1f))
         sh.addView(amtBox, lp(MATCH, WRAP).apply { setMargins(0, dp(10), 0, 0) })
+
+        // Transfer between different units: second amount box (what arrives)
+        val amtLbl1 = tv("Sent", 12f, SUB).apply {
+            visibility = View.GONE
+            setPadding(0, 0, dp(10), 0)
+        }
+        amtBox.addView(amtLbl1, 0, lp(WRAP, WRAP))
+        val amtBox2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            visibility = View.GONE
+        }
+        amtBox2.addView(tv("Received", 12f, SUB).apply { setPadding(0, 0, dp(10), 0) }, lp(WRAP, WRAP))
+        val amtTv2 = tv("0", 34f, SUB, true)
+        amtBox2.addView(amtTv2, lp(0, WRAP, 1f))
+        sh.addView(amtBox2, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
 
         val err = tv("", 12f, DANGER).apply {
             setPadding(dp(2), dp(8), 0, 0)
@@ -3520,7 +3638,8 @@ class MainActivity : Activity() {
 
         fun frames() {
             val c = kc(kind)
-            amtBox.background = box(BG, if (padOn) c else BORDER)
+            amtBox.background = box(BG, if (padOn && (curBuf == 1 || !mixed())) c else BORDER)
+            amtBox2.background = box(BG, if (padOn && curBuf == 2 && mixed()) c else BORDER)
             noteEt.background = box(BG, if (noteEt.hasFocus()) c else BORDER)
             catInput.background = box(BG, if (catInput.hasFocus()) c else BORDER)
         }
@@ -3644,7 +3763,13 @@ class MainActivity : Activity() {
             val raw = buf.toString()
             val v = raw.toDoubleOrNull() ?: 0.0
             val sign = if (kind == 2 || v == 0.0) "" else if (kind == 1) "-" else "+"
-            amtTv.text = money(sign, grp(raw))
+            amtTv.text = moneyA(accOf(acc1), sign, grp(raw))
+            val mx = mixed()
+            if (!mx) curBuf = 1
+            amtLbl1.visibility = if (mx) View.VISIBLE else View.GONE
+            amtBox2.visibility = if (mx) View.VISIBLE else View.GONE
+            amtTv2.text = moneyA(accOf(acc2), "", grp(buf2.toString()))
+            amtTv2.setTextColor(if (buf2.isEmpty()) SUB else kc(kind))
             amtTv.setTextColor(if (buf.isEmpty()) SUB else kc(kind))
             err.visibility = View.GONE
         }
@@ -3727,8 +3852,8 @@ class MainActivity : Activity() {
             }
         }
         for ((k, key) in keyViews) {
-            key.setOnClickListener { press(buf, k); amount() }
-            if (k == "←") key.setOnLongClickListener { buf.setLength(0); amount(); true }
+            key.setOnClickListener { val two = curBuf == 2 && mixed(); press(if (two) buf2 else buf, k, decOf(if (two) acc2 else acc1)); amount() }
+            if (k == "←") key.setOnLongClickListener { (if (curBuf == 2 && mixed()) buf2 else buf).setLength(0); amount(); true }
         }
         noteEt.setOnFocusChangeListener { _, has -> if (has) { dateF.close(); showPad(false) } else frames() }
         noteEt.setOnEditorActionListener { _, _, _ -> toAmount(); true }
@@ -3754,13 +3879,20 @@ class MainActivity : Activity() {
                 else openConfirmOver("Delete category?", catDelMsg(target), "Delete") { doDelCat() }
             }
         }
-        amtBox.setOnClickListener { dateF.close(); toAmount() }
+        amtBox.setOnClickListener { dateF.close(); curBuf = 1; toAmount() }
+        amtBox2.setOnClickListener { dateF.close(); curBuf = 2; toAmount() }
 
         saveBtn.setOnClickListener {
             if (catEdit.visibility == View.VISIBLE) commitCat()      // a category typed but not added yet still counts
-            val v = r2(buf.toString().toDoubleOrNull() ?: 0.0)        // 0 is allowed on purpose
+            val v = rnd(accOf(acc1), buf.toString().toDoubleOrNull() ?: 0.0)        // 0 is allowed on purpose
+            val v2 = if (mixed()) rnd(accOf(acc2), buf2.toString().toDoubleOrNull() ?: 0.0) else -1.0        // 0 is allowed on purpose
             if (kind == 2 && (qt.size < 2 || acc1 == acc2 || accOf(acc1) == null || accOf(acc2) == null)) {
                 err.text = s("Transfer needs two accounts")
+                err.visibility = View.VISIBLE
+                return@setOnClickListener
+            }
+            if (mixed() && buf2.isEmpty()) {
+                err.text = s("Enter an amount")
                 err.visibility = View.VISIBLE
                 return@setOnClickListener
             }
@@ -3772,11 +3904,11 @@ class MainActivity : Activity() {
                 when (kind) {
                     0 -> addTx(note, v, acc1, -1, picked, whenMs)
                     1 -> addTx(note, if (v == 0.0) 0.0 else -v, acc1, -1, picked, whenMs)
-                    else -> addTx(note, v, acc1, acc2, "", whenMs)
+                    else -> addTx(note, v, acc1, acc2, "", whenMs, amt2 = v2)
                 }
             } else {
                 val amt = if (kind == 1 && v != 0.0) -v else v
-                val nw = Tx(ed.id, whenMs, acc1, note, amt, if (kind == 2) acc2 else -1, if (kind == 2) "" else picked, ed.tpl)
+                val nw = Tx(ed.id, whenMs, acc1, note, amt, if (kind == 2) acc2 else -1, if (kind == 2) "" else picked, ed.tpl, if (kind == 2) v2 else -1.0)
                 if (updateTx(nw)) {
                     val i = txs.indexOf(ed)
                     if (i >= 0) txs[i] = nw
@@ -3836,7 +3968,7 @@ class MainActivity : Activity() {
         sh.addView(tv("Select Account", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(8)) })
 
         val bals = balMap()
-        for (a in accs.filter { !it.tplOnly }) {
+        for (a in accs.filter { it.plain }) {
             val r = accRow(a, bals[a.id] ?: 0.0, a.id == active, BG, dp(64), 10, 17f, false)
             r.setOnClickListener {
                 active = a.id
@@ -3940,7 +4072,9 @@ class MainActivity : Activity() {
         val cur = balOf(a)
         val st = Style(a.color, a.img)
         val origImg = a.img
-        val tpo = booleanArrayOf(a.tplOnly)
+        val ao = AccOpts(a.tplOnly, a.sav, a.unit)
+        // the last normal account can't be hidden or turned into a savings account
+        val canOpt = !a.plain || accs.any { it !== a && it.plain }
         openEditor(
             title = "Edit Account",
             nameHint = "Account name",
@@ -3955,13 +4089,18 @@ class MainActivity : Activity() {
             // the last remaining account can't be deleted
             onDelete = if (canDelete(a)) ({ requestDeleteAccount(a) }) else null,
             style = st,
-            // the switch is hidden for the last normal account (it can't become template-only)
-            tplOnlyRef = if (a.tplOnly || accs.any { it !== a && !it.tplOnly }) tpo else null
+            accOpts = if (canOpt) ao else null
         ) { nm, v, _ ->
             if (nm.isNotEmpty()) a.name = nm
-            a.open = v - (cur - a.open)
-            a.tplOnly = tpo[0]
-            if (a.tplOnly && active == a.id) active = accs.first { !it.tplOnly }.id
+            if (canOpt) {
+                a.sav = ao.sav
+                a.tplOnly = ao.hide
+                a.unit = if (ao.sav) ao.unit.trim() else ""
+            }
+            a.open = rnd(a, v - (cur - a.open))
+            // templates can't charge a savings account
+            if (a.sav) tpls.forEach { if (it.acc == a.id) it.acc = -1 }
+            if (!a.plain && active == a.id) active = (accs.firstOrNull { it.plain } ?: accs[0]).id
             // old photo is no longer used -> free the file
             if (origImg != null && origImg != st.img) deleteImg(origImg)
             a.color = st.color
@@ -3973,7 +4112,7 @@ class MainActivity : Activity() {
 
     private fun openNewAccount() {
         val st = Style(0, null)
-        val tpo = booleanArrayOf(false)
+        val ao = AccOpts(false, false, "")
         openEditor(
             title = "New Account",
             nameHint = "Account name",
@@ -3988,10 +4127,15 @@ class MainActivity : Activity() {
             onDelete = null,
             style = st,
             defaultNeg = false,
-            tplOnlyRef = tpo
+            accOpts = ao
         ) { nm, v, _ ->
             val id = nid++
-            accs.add(Acc(id, if (nm.isEmpty()) newAccName() else nm, v, st.color, st.img, tpo[0]))
+            accs.add(
+                Acc(
+                    id, if (nm.isEmpty()) newAccName() else nm, if (ao.sav) r8(v) else r2(v),
+                    st.color, st.img, ao.hide, ao.sav, if (ao.sav) ao.unit.trim() else ""
+                )
+            )
             saveCfg()
             render()
         }
@@ -4070,7 +4214,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun press(buf: StringBuilder, k: String) {
+    private fun press(buf: StringBuilder, k: String, dec: Int = 2) {
         when (k) {
             "←" -> if (buf.isNotEmpty()) buf.setLength(buf.length - 1)
             "." -> if (buf.indexOf(".") < 0) {
@@ -4080,7 +4224,7 @@ class MainActivity : Activity() {
             else -> {
                 val dot = buf.indexOf(".")
                 if (dot >= 0) {
-                    if (buf.length - dot - 1 >= 2) return
+                    if (buf.length - dot - 1 >= dec) return
                 } else if (buf.length >= 9) return
                 if (buf.toString() == "0") buf.setLength(0)
                 buf.append(k)
@@ -4093,6 +4237,7 @@ class MainActivity : Activity() {
         val f = frame ?: return
         if (sheet != null) return
         val expense = t.ask == 1
+        val accs = this.accs.filter { !it.sav }   // a template can't charge a savings account (hidden accounts are fine)
         val c = if (expense) DANGER else ACCENT
         var accId = accOf(t.acc)?.id ?: activeAcc().id   // starts as the template's account, can be changed in the sheet
         val buf = StringBuilder(if (t.amt > 0.0) raw(t.amt) else "")
@@ -4245,6 +4390,7 @@ class MainActivity : Activity() {
     private var over: View? = null
 
     private fun closeOver() {
+        hideKb()
         over?.let { (it.parent as? ViewGroup)?.removeView(it) }
         over = null
     }
@@ -4352,6 +4498,122 @@ class MainActivity : Activity() {
         scrim.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
         sh.animate().translationY(0f).setDuration(DUR + 60L).setInterpolator(ease).start()
     }
+    // small sheet above the account editor: Savings account (+ unit) and Hide from Income & Expense
+    private fun openAccOptionsOver(o: AccOpts, onChange: () -> Unit) {
+        val f = frame ?: return
+        if (over != null) return
+        hideKb()
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xB3000000.toInt())
+            setOnClickListener { closeOver() }
+        }
+        val rad = dp(22).toFloat()
+        val sh = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(18), dp(20))
+            background = GradientDrawable().apply {
+                setColor(CARD)
+                cornerRadii = floatArrayOf(rad, rad, rad, rad, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        sh.addView(
+            View(this).apply { background = box(BORDER) },
+            lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; setMargins(0, 0, 0, dp(12)) }
+        )
+        sh.addView(tv("Options", 18f, TEXT, true).apply { setPadding(dp(2), 0, 0, dp(10)) })
+
+        fun row(title: String, sub: String, sw: View): LinearLayout {
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(12), dp(12))
+                background = box(BG, BORDER)
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(tv(title, 14f, TEXT, true))
+            col.addView(tv(sub, 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
+            r.addView(col, lp(0, WRAP, 1f))
+            r.addView(sw, lp(dp(50), dp(28)))
+            return r
+        }
+
+        // unit of a savings account (free text: no currency list to keep up to date)
+        val unitEt = EditText(this).apply {
+            hint = s("Unit (e.g. gram, USD, BTC)")
+            setText(o.unit)
+            inputType = InputType.TYPE_CLASS_TEXT
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            filters = arrayOf<InputFilter>(InputFilter.LengthFilter(10))
+            textSize = 15f
+            typeface = fontReg
+            setTextColor(TEXT)
+            setHintTextColor(SUB)
+            setPadding(dp(14), dp(11), dp(14), dp(11))
+            background = box(BG, BORDER)
+            visibility = if (o.sav) View.VISIBLE else View.GONE
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(c: CharSequence?, st: Int, n: Int, a: Int) {}
+                override fun onTextChanged(c: CharSequence?, st: Int, b: Int, n: Int) {}
+                override fun afterTextChanged(e: android.text.Editable?) {
+                    o.unit = e?.toString()?.trim() ?: ""
+                    onChange()
+                }
+            })
+            setOnEditorActionListener { _, _, _ -> hideKb(); true }
+        }
+
+        var hideSw: Sw? = null
+        val savSw = switchCtl(o.sav) { on ->
+            o.sav = on
+            unitEt.visibility = if (on) View.VISIBLE else View.GONE
+            if (on && !o.hide) {
+                // a savings account starts hidden from Income / Expense; the user can still turn that off
+                o.hide = true
+                o.auto = true
+                hideSw?.set?.invoke(true)
+            } else if (!on && o.auto) {
+                // the user did not touch "hide" in between: undo what the savings switch did
+                o.hide = false
+                o.auto = false
+                hideSw?.set?.invoke(false)
+            }
+            onChange()
+        }
+        val hs = switchCtl(o.hide) { on ->
+            o.hide = on
+            o.auto = false
+            onChange()
+        }
+        hideSw = hs
+
+        sh.addView(
+            row("Savings account", "Kept out of Total Balance. Just an amount and a unit: gold, dollars, crypto...", savSw.view),
+            lp(MATCH, WRAP)
+        )
+        sh.addView(unitEt, lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) })
+        sh.addView(
+            row("Hide from Income & Expense", "Still available in Transfer", hs.view),
+            lp(MATCH, WRAP).apply { setMargins(0, dp(8), 0, 0) }
+        )
+
+        val done = tv("Done", 16f, BG, true).apply {
+            gravity = Gravity.CENTER
+            background = tap(ACCENT)
+            setOnClickListener { closeOver() }
+        }
+        pressFx(done, 0.97f)
+        sh.addView(done, lp(MATCH, dp(52)).apply { setMargins(0, dp(14), 0, 0) })
+
+        scrim.addView(sh, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        f.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        over = scrim
+
+        scrim.alpha = 0f
+        sh.translationY = dp(40).toFloat()
+        scrim.animate().alpha(1f).setDuration(DUR).setInterpolator(ease).start()
+        sh.animate().translationY(0f).setDuration(DUR + 60L).setInterpolator(ease).start()
+    }
 
     private fun closeSheet() {
         closeOver()
@@ -4378,7 +4640,7 @@ class MainActivity : Activity() {
         accSel: Int? = null,
         style: Style? = null,
         defaultNeg: Boolean = true,
-        tplOnlyRef: BooleanArray? = null,
+        accOpts: AccOpts? = null,
         askRef: BooleanArray? = null,
         catRef: Array<String>? = null,
         onSave: (String, Double, Int) -> Unit
@@ -4496,7 +4758,7 @@ class MainActivity : Activity() {
             val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val opts = ArrayList<Pair<Int, String>>()
             opts.add(Pair(-1, "Active account"))
-            for (a in accs) opts.add(Pair(a.id, a.name))
+            for (a in accs) if (!a.sav) opts.add(Pair(a.id, a.name))
             for (o in opts) {
                 val id = o.first
                 val chip = tv(o.second, 13f, SUB, true, user = true).apply {
@@ -4696,20 +4958,21 @@ class MainActivity : Activity() {
             head.addView(optBtn, 1)    // title is child 0, so this lands right before Delete
         }
 
-        // account only: "Template only" switch
-        if (tplOnlyRef != null) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(12), dp(10))
-                background = box(BG, BORDER)
+        // accounts only: "Options" button in the header (Savings account, Hide from Income & Expense)
+        var onOpt: () -> Unit = {}
+        if (accOpts != null) {
+            val optBtn = tv("Options", 14f, SUB, true).apply {
+                setPadding(dp(12), dp(8), dp(4), dp(8))
             }
-            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            col.addView(tv("Template only", 14f, TEXT, true))
-            col.addView(tv("Hidden from the Income and Expense lists", 12f, SUB).apply { setPadding(0, dp(2), dp(8), 0) })
-            row.addView(col, lp(0, WRAP, 1f))
-            row.addView(toggle(tplOnlyRef[0], { tplOnlyRef[0] = it }), lp(dp(50), dp(28)))
-            sh.addView(row, lp(MATCH, WRAP).apply { setMargins(0, dp(12), 0, 0) })
+            fun paintOpt() { optBtn.setTextColor(if (accOpts.sav || accOpts.hide) ACCENT else SUB) }
+            optBtn.setOnClickListener {
+                openAccOptionsOver(accOpts) {
+                    paintOpt()
+                    onOpt()
+                }
+            }
+            paintOpt()
+            head.addView(optBtn, 1)    // title is child 0, so this lands right before Delete
         }
 
         val err = tv("", 12f, DANGER).apply {
@@ -4728,7 +4991,7 @@ class MainActivity : Activity() {
             val v = buf.toString().toDoubleOrNull() ?: 0.0
             val empty = buf.isEmpty()
             val sign = if (neg && v != 0.0) "-" else ""
-            amtTv.text = money(sign, grp(buf.toString()))
+            amtTv.text = moneyS(accOpts != null && accOpts.sav, accOpts?.unit?.trim() ?: "", sign, grp(buf.toString()))
             amtTv.setTextColor(if (empty) SUB else if (neg) DANGER else ACCENT)
             segNeg.setTextColor(if (neg) BG else SUB)
             segPos.setTextColor(if (!neg) BG else SUB)
@@ -4749,7 +5012,7 @@ class MainActivity : Activity() {
                 val key = tv(k, 22f, TEXT, true).apply {
                     gravity = Gravity.CENTER
                     background = tap(KEY)
-                    setOnClickListener { press(buf, k); refresh() }
+                    setOnClickListener { press(buf, k, if (accOpts != null && accOpts.sav) 8 else 2); refresh() }
                     if (k == "←") setOnLongClickListener { buf.setLength(0); refresh(); true }
                 }
                 pressFx(key, 0.94f)
@@ -4975,6 +5238,14 @@ class MainActivity : Activity() {
         sheet = scrim
 
         refresh()
+        onOpt = {
+            // switched back to a normal account: the amount keeps only 2 decimals
+            if (accOpts != null && !accOpts.sav) {
+                val d = buf.indexOf(".")
+                if (d >= 0 && buf.length - d - 1 > 2) buf.setLength(d + 3)
+            }
+            refresh()
+        }
         if (startOnName) toName() else toAmount()
     }
 }
